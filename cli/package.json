@@ -9,7 +9,11 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": ["platform", "devops", "cli"],
+  "keywords": [
+    "platform",
+    "devops",
+    "cli"
+  ],
   "author": "Goddey Uwamari",
   "license": "MIT",
   "dependencies": {
