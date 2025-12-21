@@ -1,0 +1,33 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: cloudbill
+
+resources:
+  - namespace.yaml
+  - secrets.yaml
+  - configmap.yaml
+  - postgres.yaml
+  - redis.yaml
+  - api-gateway.yaml
+  - auth-service.yaml
+  - billing-service.yaml
+  - payment-service.yaml
+  - notification-service.yaml
+  - ingress.yaml
+
+commonLabels:
+  app.kubernetes.io/part-of: cloudbill
+  app.kubernetes.io/managed-by: kustomize
+
+images:
+  - name: cloudbill/api-gateway
+    newTag: latest
+  - name: cloudbill/auth-service
+    newTag: latest
+  - name: cloudbill/billing-service
+    newTag: latest
+  - name: cloudbill/payment-service
+    newTag: latest
+  - name: cloudbill/notification-service
+    newTag: latest

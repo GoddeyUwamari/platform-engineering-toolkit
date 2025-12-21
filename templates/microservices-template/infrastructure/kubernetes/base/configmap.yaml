@@ -1,0 +1,134 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cloudbill-common-config
+  namespace: cloudbill
+data:
+  # Common configuration
+  NODE_ENV: "production"
+  LOG_LEVEL: "info"
+
+  # Database configuration
+  DB_HOST: "postgres-service"
+  DB_PORT: "5432"
+  DB_NAME: "cloudbill"
+  DB_POOL_MIN: "2"
+  DB_POOL_MAX: "10"
+
+  # Redis configuration
+  REDIS_HOST: "redis-service"
+  REDIS_PORT: "6379"
+  REDIS_DB: "0"
+
+  # Session configuration
+  SESSION_TTL: "86400"  # 24 hours
+  REFRESH_TOKEN_TTL: "604800"  # 7 days
+
+  # Kafka configuration (if needed)
+  KAFKA_BROKERS: "kafka-service:9092"
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-gateway-config
+  namespace: cloudbill
+data:
+  PORT: "8080"
+
+  # Service URLs (internal cluster DNS)
+  AUTH_SERVICE_URL: "http://auth-service:3001"
+  BILLING_SERVICE_URL: "http://billing-service:3002"
+  PAYMENT_SERVICE_URL: "http://payment-service:3003"
+  NOTIFICATION_SERVICE_URL: "http://notification-service:3004"
+
+  # Rate limiting
+  RATE_LIMIT_WINDOW_MS: "900000"  # 15 minutes
+  RATE_LIMIT_MAX_REQUESTS: "100"
+
+  # CORS
+  CORS_ORIGIN: "*"
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: auth-service-config
+  namespace: cloudbill
+data:
+  PORT: "3001"
+
+  # JWT configuration
+  JWT_EXPIRES_IN: "1h"
+  JWT_REFRESH_EXPIRES_IN: "7d"
+
+  # OAuth2 configuration
+  GOOGLE_CALLBACK_URL: "/api/auth/google/callback"
+  GITHUB_CALLBACK_URL: "/api/auth/github/callback"
+
+  # Password policy
+  PASSWORD_MIN_LENGTH: "8"
+  PASSWORD_REQUIRE_UPPERCASE: "true"
+  PASSWORD_REQUIRE_LOWERCASE: "true"
+  PASSWORD_REQUIRE_NUMBER: "true"
+  PASSWORD_REQUIRE_SPECIAL: "true"
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: billing-service-config
+  namespace: cloudbill
+data:
+  PORT: "3002"
+
+  # Billing configuration
+  INVOICE_DUE_DAYS: "30"
+  GRACE_PERIOD_DAYS: "3"
+
+  # PDF generation
+  INVOICE_TEMPLATE_PATH: "/app/templates/invoice.hbs"
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: payment-service-config
+  namespace: cloudbill
+data:
+  PORT: "3003"
+
+  # Stripe configuration
+  STRIPE_API_VERSION: "2023-10-16"
+  STRIPE_WEBHOOK_TOLERANCE: "300"  # 5 minutes
+
+  # Payment retry configuration
+  MAX_RETRY_ATTEMPTS: "3"
+  RETRY_DELAY_MS: "300000"  # 5 minutes
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: notification-service-config
+  namespace: cloudbill
+data:
+  PORT: "3004"
+
+  # Email configuration (SMTP)
+  SMTP_HOST: "smtp.gmail.com"
+  SMTP_PORT: "587"
+  SMTP_SECURE: "false"
+  SMTP_FROM_EMAIL: "noreply@cloudbill.com"
+  SMTP_FROM_NAME: "CloudBill"
+
+  # Twilio SMS configuration
+  TWILIO_FROM_PHONE: "+1234567890"
+
+  # Webhook configuration
+  WEBHOOK_TIMEOUT_MS: "5000"
+  WEBHOOK_MAX_RETRIES: "3"
+
+  # Template paths
+  EMAIL_TEMPLATE_PATH: "/app/templates/email"
+  SMS_TEMPLATE_PATH: "/app/templates/sms"

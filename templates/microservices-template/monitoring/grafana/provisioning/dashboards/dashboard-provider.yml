@@ -1,0 +1,19 @@
+# ============================================================================
+# Grafana Dashboard Provisioning Provider
+# ============================================================================
+# This file tells Grafana where to find dashboard JSON files
+# ============================================================================
+
+apiVersion: 1
+
+providers:
+  - name: 'CloudBill Dashboards'
+    orgId: 1
+    folder: 'CloudBill'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: true

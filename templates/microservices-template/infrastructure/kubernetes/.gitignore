@@ -1,0 +1,47 @@
+# Kubernetes - Ignore sensitive files
+
+# Secrets with real credentials (keep template only)
+**/secrets-prod.yaml
+**/secrets-staging.yaml
+**/secrets-*.yaml
+!**/secrets.yaml
+
+# Environment-specific configs with real data
+**/configmap-prod.yaml
+**/configmap-staging.yaml
+
+# Kustomize build output
+kustomization-build.yaml
+
+# Helm values with secrets
+**/values-prod.yaml
+**/values-staging.yaml
+**/values-*.yaml
+
+# Backup files
+*.bak
+*.backup
+
+# TLS certificates and keys
+*.crt
+*.key
+*.pem
+*.pfx
+*.p12
+
+# Kubeconfig files
+kubeconfig
+*.kubeconfig
+config
+
+# Temporary files
+*.tmp
+*.temp
+.DS_Store
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~

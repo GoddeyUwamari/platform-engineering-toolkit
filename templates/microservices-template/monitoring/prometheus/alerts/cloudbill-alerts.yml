@@ -1,0 +1,297 @@
+# ============================================================================
+# CloudBill - Prometheus Alert Rules
+# ============================================================================
+# These alerts monitor the health and performance of CloudBill services
+# ============================================================================
+
+groups:
+  # --------------------------------------------------------------------------
+  # Service Health & Availability Alerts
+  # --------------------------------------------------------------------------
+  - name: service_health
+    interval: 30s
+    rules:
+      # Alert when a service is down
+      - alert: ServiceDown
+        expr: up{job=~".*-service|api-gateway"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          category: availability
+        annotations:
+          summary: "Service {{ $labels.job }} is down"
+          description: "{{ $labels.job }} has been down for more than 1 minute. Instance: {{ $labels.instance }}"
+
+      # Alert when service has high error rate
+      - alert: HighErrorRate
+        expr: |
+          (
+            sum by (service, method, route) (rate(http_requests_total{status=~"5.."}[5m]))
+            /
+            sum by (service, method, route) (rate(http_requests_total[5m]))
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          category: errors
+        annotations:
+          summary: "High error rate detected in {{ $labels.service }}"
+          description: "Service {{ $labels.service }} has error rate above 5% for route {{ $labels.route }}. Current rate: {{ $value | humanizePercentage }}"
+
+      # Alert when service has critical error rate
+      - alert: CriticalErrorRate
+        expr: |
+          (
+            sum by (service, method, route) (rate(http_requests_total{status=~"5.."}[5m]))
+            /
+            sum by (service, method, route) (rate(http_requests_total[5m]))
+          ) > 0.20
+        for: 2m
+        labels:
+          severity: critical
+          category: errors
+        annotations:
+          summary: "CRITICAL error rate in {{ $labels.service }}"
+          description: "Service {{ $labels.service }} has error rate above 20% for route {{ $labels.route }}. Immediate action required! Current rate: {{ $value | humanizePercentage }}"
+
+  # --------------------------------------------------------------------------
+  # Performance & Latency Alerts
+  # --------------------------------------------------------------------------
+  - name: performance
+    interval: 30s
+    rules:
+      # Alert when P95 latency is high
+      - alert: HighLatencyP95
+        expr: |
+          histogram_quantile(0.95,
+            sum by (service, route, le) (rate(http_request_duration_seconds_bucket[5m]))
+          ) > 2
+        for: 5m
+        labels:
+          severity: warning
+          category: performance
+        annotations:
+          summary: "High P95 latency in {{ $labels.service }}"
+          description: "Service {{ $labels.service }} route {{ $labels.route }} has P95 latency above 2 seconds. Current: {{ $value }}s"
+
+      # Alert when P99 latency is critical
+      - alert: CriticalLatencyP99
+        expr: |
+          histogram_quantile(0.99,
+            sum by (service, route, le) (rate(http_request_duration_seconds_bucket[5m]))
+          ) > 5
+        for: 3m
+        labels:
+          severity: critical
+          category: performance
+        annotations:
+          summary: "CRITICAL P99 latency in {{ $labels.service }}"
+          description: "Service {{ $labels.service }} route {{ $labels.route }} has P99 latency above 5 seconds. Current: {{ $value }}s"
+
+      # Alert for slow database queries
+      - alert: SlowDatabaseQueries
+        expr: |
+          histogram_quantile(0.95,
+            sum by (service, operation, le) (rate(db_query_duration_seconds_bucket[5m]))
+          ) > 1
+        for: 5m
+        labels:
+          severity: warning
+          category: database
+        annotations:
+          summary: "Slow database queries in {{ $labels.service }}"
+          description: "Service {{ $labels.service }} operation {{ $labels.operation }} has P95 DB query time above 1 second. Current: {{ $value }}s"
+
+  # --------------------------------------------------------------------------
+  # Resource Utilization Alerts
+  # --------------------------------------------------------------------------
+  - name: resources
+    interval: 30s
+    rules:
+      # High memory usage alert
+      - alert: HighMemoryUsage
+        expr: |
+          (process_resident_memory_bytes / 1024 / 1024 / 1024) > 1
+        for: 10m
+        labels:
+          severity: warning
+          category: resources
+        annotations:
+          summary: "High memory usage in {{ $labels.job }}"
+          description: "Service {{ $labels.job }} is using more than 1GB of memory. Current: {{ $value | humanize }}GB"
+
+      # Critical memory usage alert
+      - alert: CriticalMemoryUsage
+        expr: |
+          (process_resident_memory_bytes / 1024 / 1024 / 1024) > 2
+        for: 5m
+        labels:
+          severity: critical
+          category: resources
+        annotations:
+          summary: "CRITICAL memory usage in {{ $labels.job }}"
+          description: "Service {{ $labels.job }} is using more than 2GB of memory. Current: {{ $value | humanize }}GB. Possible memory leak!"
+
+      # High CPU usage alert
+      - alert: HighCPUUsage
+        expr: |
+          rate(process_cpu_seconds_total[5m]) > 0.8
+        for: 10m
+        labels:
+          severity: warning
+          category: resources
+        annotations:
+          summary: "High CPU usage in {{ $labels.job }}"
+          description: "Service {{ $labels.job }} is using more than 80% CPU. Current: {{ $value | humanizePercentage }}"
+
+  # --------------------------------------------------------------------------
+  # Database Connection Pool Alerts
+  # --------------------------------------------------------------------------
+  - name: database
+    interval: 30s
+    rules:
+      # Database connection pool exhaustion warning
+      - alert: DatabasePoolExhaustion
+        expr: |
+          (db_pool_active_connections / db_pool_max_connections) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          category: database
+        annotations:
+          summary: "Database pool near exhaustion in {{ $labels.service }}"
+          description: "Service {{ $labels.service }} is using more than 80% of database connections. Active: {{ $value | humanizePercentage }}"
+
+      # Database connection errors
+      - alert: DatabaseConnectionErrors
+        expr: |
+          rate(db_errors_total[5m]) > 0
+        for: 2m
+        labels:
+          severity: critical
+          category: database
+        annotations:
+          summary: "Database connection errors in {{ $labels.service }}"
+          description: "Service {{ $labels.service }} is experiencing database connection errors. Error rate: {{ $value }}/sec"
+
+  # --------------------------------------------------------------------------
+  # Redis Cache Alerts
+  # --------------------------------------------------------------------------
+  - name: redis
+    interval: 30s
+    rules:
+      # High cache miss rate
+      - alert: HighCacheMissRate
+        expr: |
+          (
+            rate(redis_operations_total{operation="miss"}[5m])
+            /
+            rate(redis_operations_total[5m])
+          ) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+          category: cache
+        annotations:
+          summary: "High Redis cache miss rate in {{ $labels.service }}"
+          description: "Service {{ $labels.service }} has cache miss rate above 50%. Current: {{ $value | humanizePercentage }}"
+
+      # Redis connection errors
+      - alert: RedisConnectionErrors
+        expr: |
+          rate(redis_errors_total[5m]) > 0
+        for: 2m
+        labels:
+          severity: critical
+          category: cache
+        annotations:
+          summary: "Redis connection errors in {{ $labels.service }}"
+          description: "Service {{ $labels.service }} is experiencing Redis connection errors. Error rate: {{ $value }}/sec"
+
+  # --------------------------------------------------------------------------
+  # Business Logic Alerts
+  # --------------------------------------------------------------------------
+  - name: business_metrics
+    interval: 30s
+    rules:
+      # Failed payment processing
+      - alert: HighPaymentFailureRate
+        expr: |
+          (
+            sum by (service) (rate(cloudbill_payments_failed_total[10m]))
+            /
+            sum by (service) (rate(cloudbill_payments_total[10m]))
+          ) > 0.10
+        for: 5m
+        labels:
+          severity: warning
+          category: business
+        annotations:
+          summary: "High payment failure rate"
+          description: "Payment failure rate is above 10%. Current: {{ $value | humanizePercentage }}"
+
+      # Invoice generation failures
+      - alert: InvoiceGenerationFailures
+        expr: |
+          rate(cloudbill_invoices_failed_total[5m]) > 0
+        for: 3m
+        labels:
+          severity: warning
+          category: business
+        annotations:
+          summary: "Invoice generation failures detected"
+          description: "Invoice generation is failing. Failure rate: {{ $value }}/sec"
+
+      # Notification delivery failures
+      - alert: NotificationDeliveryFailures
+        expr: |
+          (
+            sum by (service, notification_type) (rate(cloudbill_notifications_failed_total[10m]))
+            /
+            sum by (service, notification_type) (rate(cloudbill_notifications_total[10m]))
+          ) > 0.15
+        for: 5m
+        labels:
+          severity: warning
+          category: business
+        annotations:
+          summary: "High notification failure rate"
+          description: "Notification type {{ $labels.notification_type }} has failure rate above 15%. Current: {{ $value | humanizePercentage }}"
+
+  # --------------------------------------------------------------------------
+  # Request Rate Alerts
+  # --------------------------------------------------------------------------
+  - name: traffic
+    interval: 30s
+    rules:
+      # Sudden traffic spike
+      - alert: TrafficSpike
+        expr: |
+          (
+            sum by (service) (rate(http_requests_total[1m]))
+            /
+            sum by (service) (rate(http_requests_total[10m] offset 10m))
+          ) > 2
+        for: 3m
+        labels:
+          severity: warning
+          category: traffic
+        annotations:
+          summary: "Traffic spike detected in {{ $labels.service }}"
+          description: "Service {{ $labels.service }} experiencing 2x traffic increase. Current rate: {{ $value }}x normal"
+
+      # Sudden traffic drop (possible outage)
+      - alert: TrafficDrop
+        expr: |
+          (
+            sum by (service) (rate(http_requests_total[5m]))
+            /
+            sum by (service) (rate(http_requests_total[10m] offset 10m))
+          ) < 0.2
+        for: 5m
+        labels:
+          severity: critical
+          category: traffic
+        annotations:
+          summary: "Significant traffic drop in {{ $labels.service }}"
+          description: "Service {{ $labels.service }} traffic dropped below 20% of normal. Possible outage!"

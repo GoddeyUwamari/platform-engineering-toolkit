@@ -1,0 +1,74 @@
+{
+  "name": "cloudbill",
+  "version": "1.0.0",
+  "description": "Multi-tenant SaaS billing platform - Microservices architecture with Express, PostgreSQL, Kafka, Kubernetes",
+  "private": true,
+  "workspaces": [
+    "services/*",
+    "shared"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev --workspace=services/api-gateway\" \"npm run dev --workspace=services/auth-service\" \"npm run dev --workspace=services/billing-service\" \"npm run dev --workspace=services/payment-service\" \"npm run dev --workspace=services/notification-service\"",
+    "build": "npm run build --workspaces",
+    "test": "npm run test --workspaces",
+    "test:coverage": "npm run test:coverage --workspaces",
+    "lint": "eslint . --ext .ts,.js",
+    "lint:fix": "eslint . --ext .ts,.js --fix",
+    "format": "prettier --write \"**/*.{ts,js,json,md}\"",
+    "format:check": "prettier --check \"**/*.{ts,js,json,md}\"",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down",
+    "docker:logs": "docker-compose logs -f",
+    "docker:build": "docker-compose build",
+    "db:migrate": "node scripts/migrate-db.js",
+    "db:seed": "node scripts/seed-db.js",
+    "setup": "npm install && npm run docker:up && npm run db:migrate",
+    "clean": "rm -rf node_modules dist coverage && npm run clean --workspaces"
+  },
+  "keywords": [
+    "billing",
+    "payment",
+    "saas",
+    "microservices",
+    "kubernetes",
+    "express",
+    "typescript",
+    "postgresql",
+    "kafka",
+    "redis"
+  ],
+  "author": "Goddey Uwamari",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/bcrypt": "^6.0.0",
+    "@types/node": "^20.10.6",
+    "@typescript-eslint/eslint-plugin": "^6.17.0",
+    "@typescript-eslint/parser": "^6.17.0",
+    "concurrently": "^8.2.2",
+    "eslint": "^8.56.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-prettier": "^5.1.2",
+    "husky": "^8.0.3",
+    "lint-staged": "^15.2.0",
+    "prettier": "^3.1.1",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  },
+  "lint-staged": {
+    "*.{ts,js}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{json,md}": [
+      "prettier --write"
+    ]
+  },
+  "dependencies": {
+    "@types/uuid": "^10.0.0",
+    "bcrypt": "^6.0.0",
+    "uuid": "^13.0.0"
+  }
+}

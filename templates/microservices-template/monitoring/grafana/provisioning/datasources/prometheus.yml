@@ -1,0 +1,36 @@
+# ============================================================================
+# Grafana Datasource Provisioning - Prometheus
+# ============================================================================
+# This file automatically configures Prometheus as a datasource in Grafana
+# ============================================================================
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true
+    jsonData:
+      httpMethod: POST
+      timeInterval: 15s
+      # Query timeout in seconds
+      queryTimeout: 60s
+      # Custom query parameters
+      customQueryParameters: ''
+      # Enable this for Prometheus 2.x
+      prometheusType: Prometheus
+      prometheusVersion: 2.40.0
+      # Cache settings
+      cacheLevel: 'High'
+      # Incremental queries for better performance
+      incrementalQuerying: true
+      incrementalQueryOverlapWindow: 10m
+      # Disable metrics lookup for better performance
+      disableMetricsLookup: false
+      # Exemplars support (for tracing integration)
+      exemplarTraceIdDestinations:
+        - name: traceID
+          datasourceUid: tempo

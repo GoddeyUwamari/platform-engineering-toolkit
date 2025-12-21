@@ -1,0 +1,639 @@
+# ============================================================================
+# CloudBill - Docker Compose Configuration
+# Phase 6: Complete Stack with Monitoring (All Services + Prometheus + Grafana)
+# ============================================================================
+# This file defines our Docker services including:
+# - PostgreSQL for data, Redis for caching
+# - 5 Microservices (Auth, Billing, Payment, Notification, API Gateway)
+# - Prometheus for metrics collection & alerting
+# - Grafana for metrics visualization & dashboards
+# We use version 3.8 which is stable and well-supported.
+
+version: '3.8'
+
+# ============================================================================
+# SERVICES - Define containers that will run
+# ============================================================================
+services:
+  
+  # --------------------------------------------------------------------------
+  # PostgreSQL Database Service
+  # --------------------------------------------------------------------------
+  postgres:
+    # Image: Use official PostgreSQL 15 with Alpine Linux (lightweight)
+    image: postgres:15-alpine
+    
+    # Container name: Easy to reference in commands (docker logs cloudbill-postgres)
+    container_name: cloudbill-postgres
+    
+    # Restart policy: Container restarts unless explicitly stopped
+    # Options: no, always, on-failure, unless-stopped
+    restart: unless-stopped
+    
+    # Port mapping: HOST_PORT:CONTAINER_PORT
+    # Maps container's 5432 to host's 5433 to avoid conflict with local PostgreSQL
+    ports:
+      - "5433:5432"
+    
+    # Environment variables: Configure PostgreSQL
+    environment:
+      # Database name to create on first startup
+      POSTGRES_DB: ${POSTGRES_DB:-cloudbill}
+      
+      # Superuser username
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      
+      # Superuser password (use .env.docker for custom values)
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      
+      # Character encoding for database
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=en_US.utf8"
+    
+    # Volumes: Persist data even when container is removed
+    # named_volume:container_path maps to Docker-managed storage
+    volumes:
+      # Data persistence: Database files stored in Docker volume
+      - postgres_data:/var/lib/postgresql/data
+    
+    # Health check: Docker monitors if PostgreSQL is ready
+    # This is crucial for dependent services to wait for DB
+    healthcheck:
+      # Command to check if PostgreSQL accepts connections
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-cloudbill}"]
+      
+      # Time between health checks
+      interval: 10s
+      
+      # Time to wait for check to succeed
+      timeout: 5s
+      
+      # Number of retries before marking unhealthy
+      retries: 5
+      
+      # Time to wait before first check (allows startup time)
+      start_period: 10s
+    
+    # Networks: Custom network for service communication
+    # Services on same network can communicate using service names
+    networks:
+      - cloudbill-network
+
+  # --------------------------------------------------------------------------
+  # Redis Cache Service
+  # --------------------------------------------------------------------------
+  redis:
+    # Image: Use official Redis 7 with Alpine Linux (lightweight)
+    image: redis:7-alpine
+    
+    # Container name: Easy to reference in commands (docker logs cloudbill-redis)
+    container_name: cloudbill-redis
+    
+    # Restart policy: Container restarts unless explicitly stopped
+    restart: unless-stopped
+    
+    # Port mapping: HOST_PORT:CONTAINER_PORT
+    # Maps container's 6379 to host's 6380 to avoid conflict with local Redis
+    ports:
+      - "6380:6379"
+    
+    # Command: Redis server with persistence and password
+    # --appendonly yes: Enable AOF (Append Only File) for data durability
+    # --requirepass: Set password for Redis authentication
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-redis123}
+    
+    # Volumes: Persist cache data (optional but recommended)
+    volumes:
+      # Data persistence: Redis AOF and RDB files stored in Docker volume
+      - redis_data:/data
+    
+    # Health check: Docker monitors if Redis is ready
+    healthcheck:
+      # Command to check if Redis responds to PING
+      # Using --no-auth-warning to suppress password warning in logs
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "${REDIS_PASSWORD:-redis123}", "ping"]
+      
+      # Time between health checks
+      interval: 10s
+      
+      # Time to wait for check to succeed
+      timeout: 3s
+      
+      # Number of retries before marking unhealthy
+      retries: 5
+      
+      # Time to wait before first check
+      start_period: 5s
+    
+    # Networks: Same network as PostgreSQL for inter-service communication
+    networks:
+      - cloudbill-network
+
+  # --------------------------------------------------------------------------
+  # Auth Service - Authentication & Authorization Microservice
+  # --------------------------------------------------------------------------
+  auth-service:
+    # Container name: Easy to reference in commands
+    container_name: cloudbill-auth
+    
+    # Build configuration: Build from Dockerfile
+    build:
+      context: .
+      dockerfile: services/auth-service/Dockerfile
+    
+    # Restart policy: Container restarts unless explicitly stopped
+    restart: unless-stopped
+    
+    # Port mapping: HOST_PORT:CONTAINER_PORT
+    # Exposes auth service on host port 3001
+    ports:
+      - "3001:3001"
+    
+    # Environment variables: Configure Auth Service
+    environment:
+      # Server configuration
+      - NODE_ENV=production
+      - PORT=3001
+      
+      # Database connection (uses Docker network service names)
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=${POSTGRES_DB:-cloudbill}
+      - DB_USER=${POSTGRES_USER:-postgres}
+      - DB_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      
+      # Redis connection (uses Docker network service names)
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-redis123}
+      
+      # JWT configuration
+      - JWT_SECRET=${JWT_SECRET:-your-super-secret-jwt-key-change-in-production}
+      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET:-your-super-secret-refresh-key-change-in-production}
+      - JWT_EXPIRES_IN=24h
+      - JWT_REFRESH_EXPIRES_IN=30d
+    
+    # Dependencies: Wait for database and cache to be healthy before starting
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    
+    # Health check: Monitor if Auth Service is responding
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3001/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 40s
+    
+    # Networks: Same network for communication with database and cache
+    networks:
+      - cloudbill-network
+
+  # --------------------------------------------------------------------------
+  # Billing Service - Subscription management, invoicing, usage tracking
+  # --------------------------------------------------------------------------
+  billing-service:
+    # Container name: Easy to reference in commands
+    container_name: cloudbill-billing
+
+    # Build configuration: Build from Dockerfile
+    build:
+      context: .
+      dockerfile: services/billing-service/Dockerfile
+
+    # Restart policy: Container restarts unless explicitly stopped
+    restart: unless-stopped
+
+    # Port mapping: HOST_PORT:CONTAINER_PORT
+    # Exposes billing service on host port 3002
+    ports:
+      - "3002:3002"
+
+    # Environment variables: Configure Billing Service
+    environment:
+      # Server configuration
+      - NODE_ENV=production
+      - PORT=3002
+
+      # Database connection (uses Docker network service names)
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=${POSTGRES_DB:-cloudbill}
+      - DB_USER=${POSTGRES_USER:-postgres}
+      - DB_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+
+      # Redis connection (uses Docker network service names)
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-redis123}
+
+      # JWT configuration (must match across services)
+      - JWT_SECRET=${JWT_SECRET:-your-super-secret-jwt-key-change-in-production}
+      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET:-your-super-secret-refresh-key-change-in-production}
+
+    # Dependencies: Wait for database and cache to be healthy before starting
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+    # Health check: Monitor if Billing Service is responding
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3002/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 40s
+
+    # Networks: Same network for communication with database and cache
+    networks:
+      - cloudbill-network
+
+  # --------------------------------------------------------------------------
+  # Payment Service - Payment processing & Stripe integration
+  # --------------------------------------------------------------------------
+  payment-service:
+    # Container name: Easy to reference in commands
+    container_name: cloudbill-payment
+
+    # Build configuration: Build from Dockerfile
+    build:
+      context: .
+      dockerfile: services/payment-service/Dockerfile
+
+    # Restart policy: Container restarts unless explicitly stopped
+    restart: unless-stopped
+
+    # Port mapping: HOST_PORT:CONTAINER_PORT
+    # Exposes payment service on host port 3003
+    ports:
+      - "3003:3003"
+
+    # Environment variables: Configure Payment Service
+    environment:
+      # Server configuration
+      - NODE_ENV=production
+      - PORT=3003
+
+      # Database connection (uses Docker network service names)
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=${POSTGRES_DB:-cloudbill}
+      - DB_USER=${POSTGRES_USER:-postgres}
+      - DB_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+
+      # Redis connection (uses Docker network service names)
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-redis123}
+
+      # JWT configuration (must match across services)
+      - JWT_SECRET=${JWT_SECRET:-your-super-secret-jwt-key-change-in-production}
+      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET:-your-super-secret-refresh-key-change-in-production}
+
+      # Stripe configuration
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY:-sk_test_your_stripe_key}
+      - STRIPE_PUBLISHABLE_KEY=${STRIPE_PUBLISHABLE_KEY:-pk_test_your_stripe_key}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET:-whsec_your_webhook_secret}
+      - STRIPE_CURRENCY=usd
+
+    # Dependencies: Wait for database and cache to be healthy before starting
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+    # Health check: Monitor if Payment Service is responding
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3003/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 40s
+
+    # Networks: Same network for communication with database and cache
+    networks:
+      - cloudbill-network
+
+  # --------------------------------------------------------------------------
+  # Notification Service - Email, SMS, and webhook notifications
+  # --------------------------------------------------------------------------
+  notification-service:
+    # Container name: Easy to reference in commands
+    container_name: cloudbill-notification
+
+    # Build configuration: Build from Dockerfile
+    build:
+      context: .
+      dockerfile: services/notification-service/Dockerfile
+
+    # Restart policy: Container restarts unless explicitly stopped
+    restart: unless-stopped
+
+    # Port mapping: HOST_PORT:CONTAINER_PORT
+    # Exposes notification service on host port 3004
+    ports:
+      - "3004:3004"
+
+    # Environment variables: Configure Notification Service
+    environment:
+      # Server configuration
+      - NODE_ENV=production
+      - PORT=3004
+
+      # Database connection (uses Docker network service names)
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=${POSTGRES_DB:-cloudbill}
+      - DB_USER=${POSTGRES_USER:-postgres}
+      - DB_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+
+      # Redis connection (uses Docker network service names)
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-redis123}
+
+      # JWT configuration (must match across services)
+      - JWT_SECRET=${JWT_SECRET:-your-super-secret-jwt-key-change-in-production}
+      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET:-your-super-secret-refresh-key-change-in-production}
+
+      # Email configuration (SMTP)
+      - EMAIL_HOST=${EMAIL_HOST:-smtp.gmail.com}
+      - EMAIL_PORT=${EMAIL_PORT:-587}
+      - EMAIL_USER=${EMAIL_USER:-your-email@example.com}
+      - EMAIL_PASSWORD=${EMAIL_PASSWORD:-your-email-password}
+      - EMAIL_FROM=${EMAIL_FROM:-noreply@cloudbill.com}
+
+      # SMS configuration (Twilio)
+      - TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID:-your_twilio_account_sid}
+      - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN:-your_twilio_auth_token}
+      - TWILIO_PHONE_NUMBER=${TWILIO_PHONE_NUMBER:-+1234567890}
+
+      # Webhook configuration
+      - WEBHOOK_TIMEOUT_MS=${WEBHOOK_TIMEOUT_MS:-30000}
+      - WEBHOOK_MAX_RETRIES=${WEBHOOK_MAX_RETRIES:-3}
+
+    # Dependencies: Wait for database and cache to be healthy before starting
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+    # Health check: Monitor if Notification Service is responding
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3004/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 40s
+
+    # Networks: Same network for communication with database and cache
+    networks:
+      - cloudbill-network
+
+  # --------------------------------------------------------------------------
+  # API Gateway - Entry point for all client requests
+  # --------------------------------------------------------------------------
+  api-gateway:
+    # Container name: Easy to reference in commands
+    container_name: cloudbill-gateway
+
+    # Build configuration: Build from Dockerfile
+    build:
+      context: .
+      dockerfile: services/api-gateway/Dockerfile
+
+    # Restart policy: Container restarts unless explicitly stopped
+    restart: unless-stopped
+
+    # Port mapping: HOST_PORT:CONTAINER_PORT
+    # Exposes API Gateway on host port 8080
+    ports:
+      - "8080:8080"
+
+    # Environment variables: Configure API Gateway
+    environment:
+      # Server configuration
+      - NODE_ENV=production
+      - PORT=8080
+
+      # Service URLs (uses Docker network service names)
+      - AUTH_SERVICE_URL=http://auth-service:3001
+      - BILLING_SERVICE_URL=http://billing-service:3002
+      - PAYMENT_SERVICE_URL=http://payment-service:3003
+      - NOTIFICATION_SERVICE_URL=http://notification-service:3004
+      - ANALYTICS_SERVICE_URL=http://analytics-service:3005
+
+      # CORS configuration
+      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:3001,http://localhost:3005,http://localhost:3010,http://localhost:5173,http://localhost:8080
+
+      # Database connection (for health checks)
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=${POSTGRES_DB:-cloudbill}
+      - DB_USER=${POSTGRES_USER:-postgres}
+      - DB_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+
+      # Redis connection (for health checks)
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-redis123}
+
+    # Dependencies: Wait for services to be healthy before starting
+    depends_on:
+      auth-service:
+        condition: service_healthy
+      billing-service:
+        condition: service_healthy
+      payment-service:
+        condition: service_healthy
+      notification-service:
+        condition: service_healthy
+
+    # Health check: Monitor if API Gateway is responding
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:8080/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 40s
+
+    # Networks: Same network for communication with all services
+    networks:
+      - cloudbill-network
+
+  # --------------------------------------------------------------------------
+  # Prometheus - Metrics Collection & Alerting
+  # --------------------------------------------------------------------------
+  prometheus:
+    # Image: Use official Prometheus
+    image: prom/prometheus:v2.48.0
+
+    # Container name: Easy to reference in commands
+    container_name: cloudbill-prometheus
+
+    # Restart policy: Container restarts unless explicitly stopped
+    restart: unless-stopped
+
+    # Port mapping: HOST_PORT:CONTAINER_PORT
+    # Exposes Prometheus UI on host port 9090
+    ports:
+      - "9090:9090"
+
+    # Command: Configure Prometheus with retention and other settings
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+
+    # Volumes: Mount configuration and data
+    volumes:
+      # Configuration files
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/alerts:/etc/prometheus/alerts:ro
+      # Data persistence
+      - prometheus_data:/prometheus
+
+    # Dependencies: Start after all services are available
+    depends_on:
+      - api-gateway
+      - auth-service
+      - billing-service
+      - payment-service
+      - notification-service
+
+    # Health check: Monitor if Prometheus is responding
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+    # Networks: Same network to scrape metrics from services
+    networks:
+      - cloudbill-network
+
+  # --------------------------------------------------------------------------
+  # Grafana - Metrics Visualization & Dashboards
+  # --------------------------------------------------------------------------
+  grafana:
+    # Image: Use official Grafana
+    image: grafana/grafana:10.2.2
+
+    # Container name: Easy to reference in commands
+    container_name: cloudbill-grafana
+
+    # Restart policy: Container restarts unless explicitly stopped
+    restart: unless-stopped
+
+    # Port mapping: HOST_PORT:CONTAINER_PORT
+    # Exposes Grafana UI on host port 3000
+    ports:
+      - "3000:3000"
+
+    # Environment variables: Configure Grafana
+    environment:
+      # Admin credentials (change in production!)
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+
+      # Server configuration
+      - GF_SERVER_ROOT_URL=http://localhost:3000
+      - GF_SERVER_DOMAIN=localhost
+
+      # Disable registration and anonymous access
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+
+      # Enable provisioning
+      - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+
+      # Install plugins (optional)
+      - GF_INSTALL_PLUGINS=
+
+    # Volumes: Mount provisioning configs and data
+    volumes:
+      # Datasource provisioning
+      - ./monitoring/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      # Dashboard provisioning
+      - ./monitoring/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      # Data persistence
+      - grafana_data:/var/lib/grafana
+
+    # Dependencies: Wait for Prometheus to be healthy
+    depends_on:
+      prometheus:
+        condition: service_healthy
+
+    # Health check: Monitor if Grafana is responding
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+
+    # Networks: Same network to communicate with Prometheus
+    networks:
+      - cloudbill-network
+
+# ============================================================================
+# VOLUMES - Named volumes for data persistence
+# ============================================================================
+# Docker manages these volumes. Data persists even if container is deleted.
+# Location: /var/lib/docker/volumes/ on host (managed by Docker)
+volumes:
+  postgres_data:
+    driver: local
+
+  redis_data:
+    driver: local
+
+  prometheus_data:
+    driver: local
+
+  grafana_data:
+    driver: local
+
+# ============================================================================
+# NETWORKS - Custom networks for service communication
+# ============================================================================
+# Services on the same network can communicate using service names as hostnames
+# Example: postgres:5432, redis:6379, auth-service:3001 (internal ports)
+networks:
+  cloudbill-network:
+    driver: bridge
+    # Bridge: Default driver, creates isolated network for containers
+
+# ============================================================================
+# USAGE EXAMPLES:
+# ============================================================================
+# Start all services:       docker-compose up -d
+# Start specific service:   docker-compose up -d api-gateway
+# Stop services:            docker-compose down
+# View logs:                docker-compose logs -f api-gateway
+# Check status:             docker-compose ps
+# Build gateway:            docker-compose build api-gateway
+# Rebuild and start:        docker-compose up -d --build api-gateway
+# Gateway shell:            docker-compose exec api-gateway sh
+# Redis CLI:                docker-compose exec redis redis-cli -a redis123
+# PostgreSQL CLI:           docker-compose exec postgres psql -U postgres -d cloudbill
+# Remove everything:        docker-compose down -v (includes volumes!)
+#
+# Monitoring:
+# Prometheus UI:            http://localhost:9090
+# Grafana UI:               http://localhost:3000 (admin/admin)
+# Service metrics:          http://localhost:8080/metrics (and 3001-3004)
+# View Prometheus logs:     docker-compose logs -f prometheus
+# View Grafana logs:        docker-compose logs -f grafana
+# Reload Prometheus:        curl -X POST http://localhost:9090/-/reload
+# ============================================================================

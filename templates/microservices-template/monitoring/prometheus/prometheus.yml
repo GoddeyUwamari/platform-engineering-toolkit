@@ -1,0 +1,180 @@
+# ============================================================================
+# CloudBill - Prometheus Configuration
+# ============================================================================
+# This configuration scrapes metrics from all CloudBill microservices
+# and provides monitoring, alerting, and service discovery.
+# ============================================================================
+
+global:
+  # How frequently to scrape targets by default (15s is recommended for production)
+  scrape_interval: 15s
+
+  # How long until a scrape request times out
+  scrape_timeout: 10s
+
+  # How frequently to evaluate rules (alerting and recording rules)
+  evaluation_interval: 15s
+
+  # External labels to attach to any time series or alerts
+  external_labels:
+    cluster: 'cloudbill'
+    environment: 'production'
+
+# ============================================================================
+# Alerting Configuration
+# ============================================================================
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          # - 'alertmanager:9093'  # Uncomment when Alertmanager is deployed
+
+# ============================================================================
+# Rule Files - Alert and Recording Rules
+# ============================================================================
+rule_files:
+  - '/etc/prometheus/alerts/*.yml'
+
+# ============================================================================
+# Scrape Configurations - Define targets to monitor
+# ============================================================================
+scrape_configs:
+  # --------------------------------------------------------------------------
+  # Prometheus Self-Monitoring
+  # --------------------------------------------------------------------------
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          service: 'prometheus'
+          type: 'monitoring'
+
+  # --------------------------------------------------------------------------
+  # API Gateway Metrics
+  # --------------------------------------------------------------------------
+  - job_name: 'api-gateway'
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['api-gateway:8080']
+        labels:
+          service: 'api-gateway'
+          type: 'core'
+          tier: 'gateway'
+
+    # Relabel configurations for better metric organization
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+      - source_labels: [service]
+        target_label: job
+
+    # Metric relabeling to clean up or enhance metrics
+    metric_relabel_configs:
+      # Keep only CloudBill metrics and drop Prometheus defaults
+      - source_labels: [__name__]
+        regex: '(http_.*|cloudbill_.*|nodejs_.*|process_.*)'
+        action: keep
+
+  # --------------------------------------------------------------------------
+  # Auth Service Metrics
+  # --------------------------------------------------------------------------
+  - job_name: 'auth-service'
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['auth-service:3001']
+        labels:
+          service: 'auth-service'
+          type: 'core'
+          tier: 'backend'
+
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+      - source_labels: [service]
+        target_label: job
+
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: '(http_.*|cloudbill_.*|nodejs_.*|process_.*|redis_.*|db_.*)'
+        action: keep
+
+  # --------------------------------------------------------------------------
+  # Billing Service Metrics
+  # --------------------------------------------------------------------------
+  - job_name: 'billing-service'
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['billing-service:3002']
+        labels:
+          service: 'billing-service'
+          type: 'core'
+          tier: 'backend'
+
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+      - source_labels: [service]
+        target_label: job
+
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: '(http_.*|cloudbill_.*|nodejs_.*|process_.*|redis_.*|db_.*)'
+        action: keep
+
+  # --------------------------------------------------------------------------
+  # Payment Service Metrics
+  # --------------------------------------------------------------------------
+  - job_name: 'payment-service'
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['payment-service:3003']
+        labels:
+          service: 'payment-service'
+          type: 'core'
+          tier: 'backend'
+
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+      - source_labels: [service]
+        target_label: job
+
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: '(http_.*|cloudbill_.*|nodejs_.*|process_.*|redis_.*|db_.*)'
+        action: keep
+
+  # --------------------------------------------------------------------------
+  # Notification Service Metrics
+  # --------------------------------------------------------------------------
+  - job_name: 'notification-service'
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['notification-service:3004']
+        labels:
+          service: 'notification-service'
+          type: 'core'
+          tier: 'backend'
+
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+      - source_labels: [service]
+        target_label: job
+
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: '(http_.*|cloudbill_.*|nodejs_.*|process_.*|redis_.*|db_.*)'
+        action: keep
+
+# ============================================================================
+# Storage Configuration
+# ============================================================================
+# Time series database (TSDB) configuration
+# Retention: How long to keep data (default: 15 days)
+# Note: Actual retention is configured via CLI flags in docker-compose.yml

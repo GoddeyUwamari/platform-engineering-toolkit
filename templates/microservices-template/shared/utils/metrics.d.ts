@@ -1,0 +1,53 @@
+import { Registry, Counter, Histogram, Gauge } from 'prom-client';
+export declare function createMetricsRegistry(serviceName: string): Registry;
+export declare function createHttpRequestCounter(register: Registry): Counter<string>;
+export declare function createHttpRequestDuration(register: Registry): Histogram<string>;
+export declare function createActiveConnectionsGauge(register: Registry): Gauge<string>;
+export declare function createDbQueryDuration(register: Registry): Histogram<string>;
+export declare function createDbQueryCounter(register: Registry): Counter<string>;
+export declare function createDbConnectionsGauge(register: Registry): Gauge<string>;
+export declare function createRedisOperationDuration(register: Registry): Histogram<string>;
+export declare function createRedisOperationCounter(register: Registry): Counter<string>;
+export declare function createActiveSubscriptionsGauge(register: Registry): Gauge<string>;
+export declare function createInvoiceCounter(register: Registry): Counter<string>;
+export declare function createInvoiceAmountHistogram(register: Registry): Histogram<string>;
+export declare function createPaymentCounter(register: Registry): Counter<string>;
+export declare function createPaymentAmountHistogram(register: Registry): Histogram<string>;
+export declare function createRefundCounter(register: Registry): Counter<string>;
+export declare function createLoginCounter(register: Registry): Counter<string>;
+export declare function createTokenCounter(register: Registry): Counter<string>;
+export declare function createActiveSessionsGauge(register: Registry): Gauge<string>;
+export declare function createEmailCounter(register: Registry): Counter<string>;
+export declare function createSmsCounter(register: Registry): Counter<string>;
+export declare function createWebhookCounter(register: Registry): Counter<string>;
+export declare function createWebhookDuration(register: Registry): Histogram<string>;
+export interface ServiceMetrics {
+    serviceName: string;
+    register: Registry;
+    httpRequestCounter: Counter<string>;
+    httpRequestDuration: Histogram<string>;
+    activeConnections: Gauge<string>;
+    dbQueryDuration?: Histogram<string>;
+    dbQueryCounter?: Counter<string>;
+    dbConnections?: Gauge<string>;
+    redisOperationDuration?: Histogram<string>;
+    redisOperationCounter?: Counter<string>;
+}
+export declare function initializeMetrics(serviceName: string): ServiceMetrics;
+export declare function getMetrics(register: Registry): Promise<string>;
+export declare function getMetricsContentType(register: Registry): string;
+export declare function normalizeRoutePath(path: string): string;
+export declare function recordHttpMetrics(metrics: ServiceMetrics, method: string, route: string, statusCode: number, duration: number, tenantId?: string): void;
+export declare function recordDbMetrics(metrics: ServiceMetrics, operation: string, table: string, duration: number, success: boolean, tenantId?: string): void;
+export declare function recordRedisMetrics(metrics: ServiceMetrics, operation: string, duration: number, success: boolean): void;
+declare const _default: {
+    initializeMetrics: typeof initializeMetrics;
+    getMetrics: typeof getMetrics;
+    getMetricsContentType: typeof getMetricsContentType;
+    normalizeRoutePath: typeof normalizeRoutePath;
+    recordHttpMetrics: typeof recordHttpMetrics;
+    recordDbMetrics: typeof recordDbMetrics;
+    recordRedisMetrics: typeof recordRedisMetrics;
+};
+export default _default;
+//# sourceMappingURL=metrics.d.ts.map

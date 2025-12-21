@@ -1,0 +1,239 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-service
+  namespace: cloudbill
+  labels:
+    app: auth-service
+    tier: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: auth-service
+  template:
+    metadata:
+      labels:
+        app: auth-service
+        tier: backend
+    spec:
+      containers:
+      - name: auth-service
+        image: youracr.azurecr.io/auth-service:latest  # Replace with actual image
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 3001
+          name: http
+          protocol: TCP
+        env:
+        - name: PORT
+          value: "3001"
+
+        # ConfigMap references
+        - name: NODE_ENV
+          valueFrom:
+            configMapKeyRef:
+              name: cloudbill-config
+              key: NODE_ENV
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: cloudbill-config
+              key: LOG_LEVEL
+        - name: DB_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: cloudbill-config
+              key: DB_HOST
+        - name: DB_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: cloudbill-config
+              key: DB_PORT
+        - name: DB_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: cloudbill-config
+              key: DB_NAME
+        - name: DB_USER
+          valueFrom:
+            configMapKeyRef:
+              name: cloudbill-config
+              key: DB_USER
+        - name: DB_SSL
+          valueFrom:
+            configMapKeyRef:
+              name: cloudbill-config
+              key: DB_SSL
+        - name: DB_POOL_MIN
+          valueFrom:
+            configMapKeyRef:
+              name: cloudbill-config
+              key: DB_POOL_MIN
+        - name: DB_POOL_MAX
+          valueFrom:
+            configMapKeyRef:
+              name: cloudbill-config
+              key: DB_POOL_MAX
+        - name: REDIS_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: cloudbill-config
+              key: REDIS_HOST
+        - name: REDIS_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: cloudbill-config
+              key: REDIS_PORT
+        - name: REDIS_TLS
+          valueFrom:
+            configMapKeyRef:
+              name: cloudbill-config
+              key: REDIS_TLS
+        - name: JWT_EXPIRATION
+          valueFrom:
+            configMapKeyRef:
+              name: cloudbill-config
+              key: JWT_EXPIRATION
+        - name: JWT_REFRESH_EXPIRATION
+          valueFrom:
+            configMapKeyRef:
+              name: cloudbill-config
+              key: JWT_REFRESH_EXPIRATION
+        - name: GOOGLE_CALLBACK_URL
+          valueFrom:
+            configMapKeyRef:
+              name: cloudbill-config
+              key: GOOGLE_CALLBACK_URL
+        - name: GITHUB_CALLBACK_URL
+          valueFrom:
+            configMapKeyRef:
+              name: cloudbill-config
+              key: GITHUB_CALLBACK_URL
+
+        # Secret references
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: cloudbill-secrets
+              key: db-password
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: cloudbill-secrets
+              key: redis-password
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: cloudbill-secrets
+              key: jwt-secret
+        - name: JWT_REFRESH_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: cloudbill-secrets
+              key: jwt-refresh-secret
+        - name: SESSION_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: cloudbill-secrets
+              key: session-secret
+        - name: GOOGLE_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: oauth-secrets
+              key: google-client-id
+        - name: GOOGLE_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: oauth-secrets
+              key: google-client-secret
+        - name: GITHUB_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: oauth-secrets
+              key: github-client-id
+        - name: GITHUB_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: oauth-secrets
+              key: github-client-secret
+
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3001
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 3001
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop:
+            - ALL
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth-service
+  namespace: cloudbill
+  labels:
+    app: auth-service
+spec:
+  type: ClusterIP
+  ports:
+  - port: 3001
+    targetPort: 3001
+    protocol: TCP
+    name: http
+  selector:
+    app: auth-service
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: auth-service
+  namespace: cloudbill
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: auth-service
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 80
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80

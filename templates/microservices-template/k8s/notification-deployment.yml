@@ -1,0 +1,219 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-service
+  namespace: cloudbill
+  labels:
+    app: notification-service
+    tier: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: notification-service
+  template:
+    metadata:
+      labels:
+        app: notification-service
+        tier: backend
+    spec:
+      containers:
+      - name: notification-service
+        image: youracr.azurecr.io/notification-service:latest  # Replace with actual image
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 3004
+          name: http
+          protocol: TCP
+        env:
+        - name: PORT
+          value: "3004"
+
+        # ConfigMap references
+        - name: NODE_ENV
+          valueFrom:
+            configMapKeyRef:
+              name: cloudbill-config
+              key: NODE_ENV
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: cloudbill-config
+              key: LOG_LEVEL
+        - name: DB_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: cloudbill-config
+              key: DB_HOST
+        - name: DB_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: cloudbill-config
+              key: DB_PORT
+        - name: DB_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: cloudbill-config
+              key: DB_NAME
+        - name: DB_USER
+          valueFrom:
+            configMapKeyRef:
+              name: cloudbill-config
+              key: DB_USER
+        - name: DB_SSL
+          valueFrom:
+            configMapKeyRef:
+              name: cloudbill-config
+              key: DB_SSL
+        - name: DB_POOL_MIN
+          valueFrom:
+            configMapKeyRef:
+              name: cloudbill-config
+              key: DB_POOL_MIN
+        - name: DB_POOL_MAX
+          valueFrom:
+            configMapKeyRef:
+              name: cloudbill-config
+              key: DB_POOL_MAX
+        - name: REDIS_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: cloudbill-config
+              key: REDIS_HOST
+        - name: REDIS_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: cloudbill-config
+              key: REDIS_PORT
+        - name: REDIS_TLS
+          valueFrom:
+            configMapKeyRef:
+              name: cloudbill-config
+              key: REDIS_TLS
+        - name: EMAIL_FROM
+          valueFrom:
+            configMapKeyRef:
+              name: cloudbill-config
+              key: EMAIL_FROM
+        - name: EMAIL_PROVIDER
+          valueFrom:
+            configMapKeyRef:
+              name: cloudbill-config
+              key: EMAIL_PROVIDER
+        - name: AWS_SES_REGION
+          valueFrom:
+            configMapKeyRef:
+              name: cloudbill-config
+              key: AWS_SES_REGION
+
+        # Secret references
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: cloudbill-secrets
+              key: db-password
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: cloudbill-secrets
+              key: redis-password
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: cloudbill-secrets
+              key: jwt-secret
+        - name: TWILIO_ACCOUNT_SID
+          valueFrom:
+            secretKeyRef:
+              name: notification-secrets
+              key: twilio-account-sid
+        - name: TWILIO_AUTH_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: notification-secrets
+              key: twilio-auth-token
+        - name: TWILIO_PHONE_NUMBER
+          valueFrom:
+            secretKeyRef:
+              name: notification-secrets
+              key: twilio-phone-number
+
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3004
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 3004
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop:
+            - ALL
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notification-service
+  namespace: cloudbill
+  labels:
+    app: notification-service
+spec:
+  type: ClusterIP
+  ports:
+  - port: 3004
+    targetPort: 3004
+    protocol: TCP
+    name: http
+  selector:
+    app: notification-service
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: notification-service
+  namespace: cloudbill
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: notification-service
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 80
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
