@@ -1,19 +1,22 @@
 {
-  "name": "cli",
+  "name": "@platform-toolkit/cli",
   "version": "1.0.0",
+  "description": "Platform Engineering Toolkit CLI",
   "main": "index.js",
+  "bin": {
+    "platform": "./index.js"
+  },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "description": "",
+  "keywords": ["platform", "devops", "cli"],
+  "author": "Goddey Uwamari",
+  "license": "MIT",
   "dependencies": {
     "chalk": "^4.1.2",
-    "commander": "^14.0.2",
-    "fs-extra": "^11.3.3",
-    "inquirer": "^13.1.0",
+    "commander": "^12.1.0",
+    "fs-extra": "^11.2.0",
+    "inquirer": "^8.2.6",
     "ora": "^5.4.1"
   }
 }
