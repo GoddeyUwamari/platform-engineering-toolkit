@@ -1,0 +1,69 @@
+name: Deploy to EC2
+
+on:
+  workflow_run:
+    workflows: ["CI Pipeline"]
+    types:
+      - completed
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Deploy to EC2 Production
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    
+    steps:
+      - name: 🔍 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🔑 Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
+
+      - name: 🚀 Deploy to EC2
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'ENDSSH'
+            set -e
+            cd /opt/production-api
+            
+            echo "📥 Pulling latest Docker image..."
+            docker-compose pull api
+            
+            echo "🔄 Restarting containers..."
+            docker-compose up -d
+            
+            echo "⏳ Waiting for services..."
+            sleep 15
+            
+            echo "🏥 Health check..."
+            if curl -sf http://localhost:3000/health > /dev/null; then
+              echo "✅ Deployment successful!"
+              docker-compose ps
+            else
+              echo "❌ Health check failed"
+              docker-compose logs --tail=50 api
+              exit 1
+            fi
+          ENDSSH
+
+      - name: 🧹 Cleanup
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
+
+      - name: 📢 Deployment Success
+        if: success()
+        run: |
+          echo "✅ Deployed to production!"
+          echo "🌐 http://${{ secrets.EC2_HOST }}:3000"
+
+      - name: ❌ Deployment Failed
+        if: failure()
+        run: |
+          echo "❌ Deployment failed!"
+          exit 1

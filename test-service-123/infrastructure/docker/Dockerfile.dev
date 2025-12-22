@@ -1,0 +1,72 @@
+# =============================================================================
+# Development Dockerfile
+# =============================================================================
+# Optimized for local development with hot-reload
+# Includes all dev dependencies and debugging tools
+# NOT for production use
+# =============================================================================
+
+FROM node:20-alpine
+
+# Install development tools
+RUN apk add --no-cache \
+    python3 \
+    make \
+    g++ \
+    git \
+    && rm -rf /var/cache/apk/*
+
+# Set working directory
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+COPY tsconfig.json ./
+
+# Install ALL dependencies (including devDependencies)
+RUN npm install && npm cache clean --force
+
+# Copy source code
+# In development, we'll mount the source as a volume for hot-reload
+COPY . .
+
+# Set environment variables
+ENV NODE_ENV=development \
+    PORT=3000 \
+    HOST=0.0.0.0
+
+# Expose application port and debug port
+EXPOSE 3000
+EXPOSE 9229
+
+# Create non-root user for development
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S nodejs -u 1001 -G nodejs && \
+    chown -R nodejs:nodejs /app
+
+USER nodejs
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD node -e "require('http').get('http://localhost:3000/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"
+
+# Start development server with hot-reload
+CMD ["npm", "run", "dev"]
+
+# =============================================================================
+# Build Instructions:
+# =============================================================================
+# Build development image:
+#   docker build -f infrastructure/docker/Dockerfile.dev -t production-api:dev .
+#
+# Run with volume mounting for hot-reload:
+#   docker run -p 3000:3000 -p 9229:9229 \
+#     -v $(pwd)/src:/app/src \
+#     -v $(pwd)/package.json:/app/package.json \
+#     -e DB_HOST=postgres \
+#     -e REDIS_HOST=redis \
+#     production-api:dev
+#
+# Run with docker-compose (recommended):
+#   docker-compose -f docker-compose.dev.yml up
+# =============================================================================

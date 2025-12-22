@@ -1,0 +1,258 @@
+version: '3.8'
+
+# =============================================================================
+# Production Docker Compose Configuration
+# =============================================================================
+# This configuration is for production-like local testing
+# For actual production, use Kubernetes manifests
+#
+# Services:
+# - api: Node.js application (3 replicas for high availability)
+# - postgres: PostgreSQL 15 database
+# - redis: Redis 7 cache
+# - nginx: Reverse proxy and load balancer
+# =============================================================================
+
+services:
+  # ===========================================================================
+  # PostgreSQL Database
+  # ===========================================================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: production-api-postgres-prod
+    restart: always
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-production_password}
+      POSTGRES_DB: ${DB_NAME:-production_api}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data_prod:/var/lib/postgresql/data
+    networks:
+      - production-api-network
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-production_api}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  # ===========================================================================
+  # Redis Cache
+  # ===========================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: production-api-redis-prod
+    restart: always
+    command: redis-server --requirepass ${REDIS_PASSWORD:-production_redis_password} --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data_prod:/data
+    networks:
+      - production-api-network
+    healthcheck:
+      test: ['CMD', 'redis-cli', '--raw', 'incr', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+  # ===========================================================================
+  # API Application (3 replicas for HA)
+  # ===========================================================================
+  api:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile
+      args:
+        NODE_ENV: production
+    image: production-api:latest
+    restart: always
+    environment:
+      # Application
+      NODE_ENV: production
+      PORT: 3000
+      HOST: 0.0.0.0
+      API_VERSION: v1
+      APP_NAME: production-api-framework
+
+      # Database
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-production_api}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-production_password}
+      DB_SSL: 'false'
+      DB_POOL_MIN: 2
+      DB_POOL_MAX: 10
+
+      # Redis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-production_redis_password}
+      REDIS_DB: 0
+      REDIS_TTL: 3600
+
+      # JWT
+      JWT_SECRET: ${JWT_SECRET:-change_this_in_actual_production}
+      JWT_EXPIRES_IN: 7d
+
+      # Security
+      HELMET_ENABLED: 'true'
+      COMPRESSION_ENABLED: 'true'
+      CORS_ENABLED: 'true'
+
+      # Logging
+      LOG_LEVEL: info
+      LOG_FORMAT: json
+      ENABLE_REQUEST_LOGGING: 'true'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - production-api-network
+    healthcheck:
+      test: ['CMD', 'node', '-e', "require('http').get('http://localhost:3000/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    deploy:
+      replicas: 3
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.2'
+          memory: 256M
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        order: start-first
+
+  # ===========================================================================
+  # Nginx Reverse Proxy & Load Balancer
+  # ===========================================================================
+  nginx:
+    image: nginx:alpine
+    container_name: production-api-nginx
+    restart: always
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./infrastructure/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./infrastructure/nginx/conf.d:/etc/nginx/conf.d:ro
+      # Uncomment for SSL
+      # - ./infrastructure/nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - api
+    networks:
+      - production-api-network
+    healthcheck:
+      test: ['CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://localhost/health']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 128M
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  postgres_data_prod:
+    driver: local
+    name: production_api_postgres_data_prod
+  redis_data_prod:
+    driver: local
+    name: production_api_redis_data_prod
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  production-api-network:
+    driver: bridge
+    name: production_api_network_prod
+
+# =============================================================================
+# Usage Instructions:
+# =============================================================================
+#
+# 1. Build and start all services:
+#    docker-compose -f docker-compose.prod.yml up -d --build
+#
+# 2. Scale API service:
+#    docker-compose -f docker-compose.prod.yml up -d --scale api=5
+#
+# 3. View logs:
+#    docker-compose -f docker-compose.prod.yml logs -f api
+#
+# 4. Check service health:
+#    docker-compose -f docker-compose.prod.yml ps
+#
+# 5. Run database migrations:
+#    docker-compose -f docker-compose.prod.yml exec api npm run migration:run
+#
+# 6. Seed database:
+#    docker-compose -f docker-compose.prod.yml exec api npm run seed
+#
+# 7. Stop all services:
+#    docker-compose -f docker-compose.prod.yml down
+#
+# 8. Stop and remove volumes (⚠️ deletes all data):
+#    docker-compose -f docker-compose.prod.yml down -v
+#
+# 9. Access application:
+#    http://localhost/health
+#    http://localhost/api/v1/users
+#
+# =============================================================================
+# Environment Variables:
+# =============================================================================
+# Create a .env.production file with:
+#
+# DB_USER=postgres
+# DB_PASSWORD=your_secure_password
+# DB_NAME=production_api
+# REDIS_PASSWORD=your_secure_redis_password
+# JWT_SECRET=your_super_secret_jwt_key
+#
+# Then run:
+# docker-compose -f docker-compose.prod.yml --env-file .env.production up -d
+# =============================================================================

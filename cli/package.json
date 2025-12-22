@@ -17,10 +17,14 @@
   "author": "Goddey Uwamari",
   "license": "MIT",
   "dependencies": {
+    "@octokit/rest": "^22.0.1",
     "chalk": "^4.1.2",
     "commander": "^12.1.0",
+    "conf": "^10.2.0",
     "fs-extra": "^11.2.0",
     "inquirer": "^8.2.6",
-    "ora": "^5.4.1"
+    "open": "^11.0.0",
+    "ora": "^5.4.1",
+    "simple-git": "^3.30.0"
   }
 }

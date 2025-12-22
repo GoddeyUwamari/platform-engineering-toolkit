@@ -1,0 +1,48 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: production-api-ingress
+  annotations:
+    # More lenient rate limiting for staging
+    nginx.ingress.kubernetes.io/limit-rps: "200"
+spec:
+  tls:
+    - hosts:
+        - staging-api.yourdomain.com
+      secretName: staging-production-api-tls
+
+  rules:
+    - host: staging-api.yourdomain.com
+      http:
+        paths:
+          - path: /health
+            pathType: Exact
+            backend:
+              service:
+                name: production-api-service
+                port:
+                  name: http
+
+          - path: /ready
+            pathType: Exact
+            backend:
+              service:
+                name: production-api-service
+                port:
+                  name: http
+
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: production-api-service
+                port:
+                  name: http
+
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: production-api-service
+                port:
+                  name: http

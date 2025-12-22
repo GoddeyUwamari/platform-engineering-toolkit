@@ -1,0 +1,33 @@
+project_name = "production-api"
+environment  = "production"
+aws_region   = "us-east-1"
+
+vpc_cidr                      = "10.0.0.0/16"
+public_subnet_cidr            = "10.0.1.0/24"
+private_subnet_cidr           = "10.0.2.0/24"
+private_subnet_cidr_secondary = "10.0.3.0/24"
+
+ec2_instance_type    = "t3.micro"
+ec2_root_volume_size = 20
+ssh_public_key_path  = "~/.ssh/production-api-key.pub"
+allowed_ssh_cidr     = "0.0.0.0/0"  # CHANGE TO YOUR IP
+
+rds_instance_class = "db.t3.micro"
+db_name            = "api_db"
+db_username        = "dbadmin"
+db_password        = "CHANGE_ME_SECURE_PASSWORD"  # ⚠️ CHANGE THIS
+
+db_allocated_storage     = 20
+db_max_allocated_storage = 30
+db_engine_version        = "15.8"
+
+db_backup_retention_period = 0
+db_backup_window           = "03:00-04:00"
+db_maintenance_window      = "sun:04:00-sun:05:00"
+
+app_port = 3000
+
+enable_cloudwatch_logs      = true
+enable_performance_insights = false
+enable_deletion_protection  = true
+enable_backup_retention     = true

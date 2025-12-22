@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: production-api
+spec:
+  replicas: 2
+
+  template:
+    spec:
+      containers:
+        - name: api
+          # Reduced resources for staging
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi
+
+          # More verbose logging for staging
+          env:
+            - name: LOG_LEVEL
+              value: "debug"
+            - name: ENABLE_SWAGGER
+              value: "true"

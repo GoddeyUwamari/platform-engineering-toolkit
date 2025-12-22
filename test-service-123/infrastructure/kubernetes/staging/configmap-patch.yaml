@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: production-api-config
+data:
+  # Override for staging environment
+  NODE_ENV: "staging"
+  LOG_LEVEL: "debug"
+  ENABLE_SWAGGER: "true"
+  ALLOWED_ORIGINS: "https://staging-api.yourdomain.com,https://staging-app.yourdomain.com"

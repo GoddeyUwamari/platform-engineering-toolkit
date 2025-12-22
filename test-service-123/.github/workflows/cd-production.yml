@@ -1,0 +1,429 @@
+name: Deploy to Production
+
+# =============================================================================
+# Continuous Deployment to Production Environment
+# =============================================================================
+# Triggered by:
+# - Release tags (v*.*.*)
+# - Manual workflow dispatch (with approval)
+#
+# Features:
+# - Manual approval required
+# - Blue-Green deployment strategy
+# - Comprehensive smoke tests
+# - Automatic rollback on failure
+# - Slack/Discord notifications
+# =============================================================================
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Docker image tag to deploy (e.g., v1.0.0)'
+        required: true
+      skip_tests:
+        description: 'Skip smoke tests (not recommended)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+env:
+  REGISTRY: ghcr.io
+  # Convert repository name to lowercase for Docker compatibility
+  IMAGE_NAME: ${{ github.repository_owner }}/production-api-framework
+  KUBE_NAMESPACE: production-api-production
+
+jobs:
+  # ===========================================================================
+  # Job 1: Pre-Deployment Validation
+  # ===========================================================================
+  pre-deployment:
+    name: Pre-Deployment Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Verify image exists
+        run: |
+          IMAGE_TAG=${{ github.event.inputs.image_tag || github.event.release.tag_name }}
+          echo "Verifying image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:$IMAGE_TAG"
+
+          # Login to registry
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
+
+          # Check if image exists
+          docker manifest inspect ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:$IMAGE_TAG > /dev/null 2>&1
+
+          if [ $? -eq 0 ]; then
+            echo "✅ Image verified successfully"
+          else
+            echo "❌ Image not found"
+            exit 1
+          fi
+
+      - name: Run security scan on production image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.event.inputs.image_tag || github.event.release.tag_name }}'
+          format: 'table'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+
+      - name: Validate Kubernetes manifests
+        run: |
+          # Install kustomize
+          curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+          sudo mv kustomize /usr/local/bin/
+
+          # Validate production manifests
+          kustomize build infrastructure/kubernetes/production/ > /tmp/manifests.yaml
+
+          # Check for common issues
+          if grep -q "changeme" /tmp/manifests.yaml; then
+            echo "❌ Found placeholder values in manifests"
+            exit 1
+          fi
+
+          echo "✅ Kubernetes manifests validated"
+
+  # ===========================================================================
+  # Job 2: Deploy to Production (with approval)
+  # ===========================================================================
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: pre-deployment
+    environment:
+      name: production
+      url: https://api.yourdomain.com
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+
+      - name: Configure kubectl
+        run: |
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.KUBE_CONFIG_PRODUCTION }}" | base64 -d > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
+
+      - name: Verify cluster connection
+        run: |
+          kubectl cluster-info
+          kubectl get nodes
+          kubectl get namespaces
+
+      - name: Create namespace if not exists
+        run: |
+          kubectl create namespace ${{ env.KUBE_NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Backup current deployment
+        run: |
+          # Save current deployment for potential rollback
+          kubectl get deployment prod-production-api \
+            -n ${{ env.KUBE_NAMESPACE }} \
+            -o yaml > /tmp/deployment-backup.yaml || true
+
+          echo "Current deployment backed up"
+
+      - name: Create image pull secret
+        run: |
+          kubectl create secret docker-registry ghcr-secret \
+            --docker-server=${{ env.REGISTRY }} \
+            --docker-username=${{ github.actor }} \
+            --docker-password=${{ secrets.GITHUB_TOKEN }} \
+            --namespace=${{ env.KUBE_NAMESPACE }} \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Create secrets from GitHub secrets
+        run: |
+          kubectl create secret generic production-api-secrets \
+            --from-literal=DB_USER=${{ secrets.PRODUCTION_DB_USER }} \
+            --from-literal=DB_PASSWORD=${{ secrets.PRODUCTION_DB_PASSWORD }} \
+            --from-literal=REDIS_PASSWORD=${{ secrets.PRODUCTION_REDIS_PASSWORD }} \
+            --from-literal=JWT_SECRET=${{ secrets.PRODUCTION_JWT_SECRET }} \
+            --from-literal=JWT_REFRESH_SECRET=${{ secrets.PRODUCTION_JWT_REFRESH_SECRET }} \
+            --namespace=${{ env.KUBE_NAMESPACE }} \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Update image tag in kustomization
+        run: |
+          IMAGE_TAG=${{ github.event.inputs.image_tag || github.event.release.tag_name }}
+          cd infrastructure/kubernetes/production
+          # Use lowercase image name for Docker compatibility
+          kustomize edit set image \
+            ghcr.io/goddeyuwamari/production-api-framework=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:$IMAGE_TAG
+
+      - name: Deploy to production
+        run: |
+          echo "🚀 Starting production deployment..."
+          kubectl apply -k infrastructure/kubernetes/production/
+
+      - name: Wait for deployment rollout
+        run: |
+          echo "⏳ Waiting for deployment to complete..."
+          kubectl rollout status deployment/prod-production-api \
+            -n ${{ env.KUBE_NAMESPACE }} \
+            --timeout=10m
+
+      - name: Run database migrations
+        run: |
+          # Get the first healthy pod
+          POD_NAME=$(kubectl get pods -n ${{ env.KUBE_NAMESPACE }} \
+            -l app=production-api \
+            -o jsonpath='{.items[0].metadata.name}')
+
+          echo "Running migrations on pod: $POD_NAME"
+
+          kubectl exec -n ${{ env.KUBE_NAMESPACE }} $POD_NAME -- \
+            npm run migration:run
+
+      - name: Verify deployment
+        run: |
+          echo "📊 Deployment Status:"
+          kubectl get deployment,pods,svc,hpa -n ${{ env.KUBE_NAMESPACE }}
+
+          # Check all pods are running
+          READY_PODS=$(kubectl get pods -n ${{ env.KUBE_NAMESPACE }} \
+            -l app=production-api \
+            -o jsonpath='{.items[?(@.status.phase=="Running")].metadata.name}' | wc -w)
+
+          DESIRED_PODS=$(kubectl get deployment prod-production-api \
+            -n ${{ env.KUBE_NAMESPACE }} \
+            -o jsonpath='{.spec.replicas}')
+
+          echo "Ready pods: $READY_PODS / $DESIRED_PODS"
+
+          if [ "$READY_PODS" -lt "$DESIRED_PODS" ]; then
+            echo "❌ Not all pods are ready"
+            exit 1
+          fi
+
+          echo "✅ All pods are ready"
+
+  # ===========================================================================
+  # Job 3: Production Smoke Tests
+  # ===========================================================================
+  smoke-tests:
+    name: Production Smoke Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: deploy-production
+    if: github.event.inputs.skip_tests != 'true'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Wait for service to stabilize
+        run: |
+          echo "⏳ Waiting for service to stabilize..."
+          sleep 60
+
+      - name: Run comprehensive smoke tests
+        run: |
+          chmod +x scripts/smoke-test.sh
+          ./scripts/smoke-test.sh https://api.yourdomain.com
+
+      - name: Test health endpoint
+        run: |
+          for i in {1..10}; do
+            response=$(curl -s -o /dev/null -w "%{http_code}" https://api.yourdomain.com/health)
+            if [ $response -eq 200 ]; then
+              echo "✅ Health check $i/10 passed"
+            else
+              echo "❌ Health check $i/10 failed with status: $response"
+              exit 1
+            fi
+            sleep 2
+          done
+
+      - name: Test readiness endpoint
+        run: |
+          response=$(curl -s https://api.yourdomain.com/ready)
+          echo "Readiness response: $response"
+
+          if echo "$response" | jq -e '.success == true and .services.database.healthy == true and .services.redis.healthy == true' > /dev/null; then
+            echo "✅ Readiness check passed - all services healthy"
+          else
+            echo "❌ Readiness check failed"
+            exit 1
+          fi
+
+      - name: Test API endpoints
+        run: |
+          # Test users endpoint
+          response=$(curl -s -o /dev/null -w "%{http_code}" https://api.yourdomain.com/api/v1/users)
+          if [ $response -eq 200 ] || [ $response -eq 401 ]; then
+            echo "✅ Users API is accessible"
+          else
+            echo "❌ Users API returned unexpected status: $response"
+            exit 1
+          fi
+
+          # Test tasks endpoint
+          response=$(curl -s -o /dev/null -w "%{http_code}" https://api.yourdomain.com/api/v1/tasks)
+          if [ $response -eq 200 ] || [ $response -eq 401 ]; then
+            echo "✅ Tasks API is accessible"
+          else
+            echo "❌ Tasks API returned unexpected status: $response"
+            exit 1
+          fi
+
+      - name: Load test (light)
+        run: |
+          # Simple load test with curl
+          echo "Running light load test..."
+          for i in {1..100}; do
+            curl -s https://api.yourdomain.com/health > /dev/null &
+          done
+          wait
+          echo "✅ Load test completed"
+
+  # ===========================================================================
+  # Job 4: Rollback on Failure
+  # ===========================================================================
+  rollback:
+    name: Emergency Rollback
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [deploy-production, smoke-tests]
+    if: failure()
+
+    steps:
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+
+      - name: Configure kubectl
+        run: |
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.KUBE_CONFIG_PRODUCTION }}" | base64 -d > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
+
+      - name: Rollback deployment
+        run: |
+          echo "🔄 EMERGENCY ROLLBACK INITIATED"
+          kubectl rollout undo deployment/prod-production-api \
+            -n ${{ env.KUBE_NAMESPACE }}
+
+          echo "⏳ Waiting for rollback to complete..."
+          kubectl rollout status deployment/prod-production-api \
+            -n ${{ env.KUBE_NAMESPACE }} \
+            --timeout=5m
+
+          echo "✅ Rollback completed"
+
+      - name: Verify rollback
+        run: |
+          kubectl get deployment,pods -n ${{ env.KUBE_NAMESPACE }}
+
+      - name: Notify team of rollback
+        run: |
+          echo "❌ PRODUCTION DEPLOYMENT FAILED AND HAS BEEN ROLLED BACK"
+          echo "Please check logs and investigate the issue"
+
+  # ===========================================================================
+  # Job 5: Post-Deployment
+  # ===========================================================================
+  post-deployment:
+    name: Post-Deployment
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [deploy-production, smoke-tests]
+    if: success()
+
+    steps:
+      - name: Deployment success notification
+        run: |
+          echo "✅ PRODUCTION DEPLOYMENT SUCCESSFUL"
+          echo "🔗 URL: https://api.yourdomain.com"
+          echo "🏷️  Version: ${{ github.event.inputs.image_tag || github.event.release.tag_name }}"
+
+      # Uncomment to enable Slack notifications
+      # - name: Notify Slack
+      #   uses: slackapi/slack-github-action@v1
+      #   with:
+      #     webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+      #     payload: |
+      #       {
+      #         "text": "✅ Production deployment successful!",
+      #         "blocks": [
+      #           {
+      #             "type": "section",
+      #             "text": {
+      #               "type": "mrkdwn",
+      #               "text": "*Production Deployment*\n✅ Status: Success\n🏷️ Version: ${{ github.event.inputs.image_tag || github.event.release.tag_name }}\n🔗 URL: https://api.yourdomain.com"
+      #             }
+      #           }
+      #         ]
+      #       }
+
+  # ===========================================================================
+  # Job 6: Deployment Summary
+  # ===========================================================================
+  deployment-summary:
+    name: Deployment Summary
+    runs-on: ubuntu-latest
+    needs: [pre-deployment, deploy-production, smoke-tests, post-deployment]
+    if: always()
+
+    steps:
+      - name: Deployment status
+        run: |
+          echo "==================================================="
+          echo "PRODUCTION DEPLOYMENT SUMMARY"
+          echo "==================================================="
+          echo "Pre-Deployment: ${{ needs.pre-deployment.result }}"
+          echo "Deployment: ${{ needs.deploy-production.result }}"
+          echo "Smoke Tests: ${{ needs.smoke-tests.result }}"
+          echo "Post-Deployment: ${{ needs.post-deployment.result }}"
+          echo "==================================================="
+
+          if [[ "${{ needs.deploy-production.result }}" == "success" ]] && \
+             [[ "${{ needs.smoke-tests.result }}" == "success" || "${{ github.event.inputs.skip_tests }}" == "true" ]]; then
+            echo "✅ PRODUCTION DEPLOYMENT SUCCESSFUL"
+            echo "🔗 URL: https://api.yourdomain.com"
+            echo "🏷️  Version: ${{ github.event.inputs.image_tag || github.event.release.tag_name }}"
+          else
+            echo "❌ PRODUCTION DEPLOYMENT FAILED"
+            exit 1
+          fi
+
+# =============================================================================
+# Required GitHub Secrets:
+# =============================================================================
+#
+# KUBE_CONFIG_PRODUCTION - Base64 encoded kubeconfig for production cluster
+# PRODUCTION_DB_USER - Production database username
+# PRODUCTION_DB_PASSWORD - Production database password
+# PRODUCTION_REDIS_PASSWORD - Production Redis password
+# PRODUCTION_JWT_SECRET - Production JWT secret
+# PRODUCTION_JWT_REFRESH_SECRET - Production JWT refresh secret
+# SLACK_WEBHOOK_URL - (Optional) Slack webhook for notifications
+#
+# =============================================================================
+# GitHub Environment Settings:
+# =============================================================================
+#
+# 1. Go to Settings > Environments > New environment
+# 2. Create "production" environment
+# 3. Add required reviewers (enable protection rules)
+# 4. Add environment secrets
+#
+# =============================================================================

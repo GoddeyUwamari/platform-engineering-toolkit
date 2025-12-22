@@ -1,0 +1,49 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: production-api-ingress
+  annotations:
+    # Strict rate limiting for production
+    nginx.ingress.kubernetes.io/limit-rps: "100"
+    nginx.ingress.kubernetes.io/limit-connections: "10"
+spec:
+  tls:
+    - hosts:
+        - api.yourdomain.com
+      secretName: prod-production-api-tls
+
+  rules:
+    - host: api.yourdomain.com
+      http:
+        paths:
+          - path: /health
+            pathType: Exact
+            backend:
+              service:
+                name: production-api-service
+                port:
+                  name: http
+
+          - path: /ready
+            pathType: Exact
+            backend:
+              service:
+                name: production-api-service
+                port:
+                  name: http
+
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: production-api-service
+                port:
+                  name: http
+
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: production-api-service
+                port:
+                  name: http

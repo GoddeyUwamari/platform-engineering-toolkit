@@ -1,0 +1,260 @@
+name: Deploy to Staging
+
+# =============================================================================
+# Continuous Deployment to Staging Environment
+# =============================================================================
+# Automatically deploys to staging after successful CI on develop branch
+# Runs smoke tests after deployment
+# Automatic rollback on failure
+# =============================================================================
+
+on:
+  push:
+    branches:
+      - develop
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Docker image tag to deploy'
+        required: false
+        default: 'develop'
+
+env:
+  REGISTRY: ghcr.io
+  # Convert repository name to lowercase for Docker compatibility
+  IMAGE_NAME: ${{ github.repository_owner }}/production-api-framework
+  KUBE_NAMESPACE: production-api-staging
+
+jobs:
+  # ===========================================================================
+  # Job 1: Deploy to Staging
+  # ===========================================================================
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: staging
+      url: https://staging-api.yourdomain.com
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+
+      - name: Configure kubectl
+        run: |
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.KUBE_CONFIG_STAGING }}" | base64 -d > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
+
+      - name: Verify cluster connection
+        run: |
+          kubectl cluster-info
+          kubectl get nodes
+
+      - name: Create namespace if not exists
+        run: |
+          kubectl create namespace ${{ env.KUBE_NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Create image pull secret
+        run: |
+          kubectl create secret docker-registry ghcr-secret \
+            --docker-server=${{ env.REGISTRY }} \
+            --docker-username=${{ github.actor }} \
+            --docker-password=${{ secrets.GITHUB_TOKEN }} \
+            --namespace=${{ env.KUBE_NAMESPACE }} \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Create secrets from GitHub secrets
+        run: |
+          kubectl create secret generic production-api-secrets \
+            --from-literal=DB_USER=${{ secrets.STAGING_DB_USER }} \
+            --from-literal=DB_PASSWORD=${{ secrets.STAGING_DB_PASSWORD }} \
+            --from-literal=REDIS_PASSWORD=${{ secrets.STAGING_REDIS_PASSWORD }} \
+            --from-literal=JWT_SECRET=${{ secrets.STAGING_JWT_SECRET }} \
+            --from-literal=JWT_REFRESH_SECRET=${{ secrets.STAGING_JWT_REFRESH_SECRET }} \
+            --namespace=${{ env.KUBE_NAMESPACE }} \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Update image tag in kustomization
+        run: |
+          cd infrastructure/kubernetes/staging
+          # Use lowercase image name for Docker compatibility
+          kustomize edit set image \
+            ghcr.io/goddeyuwamari/production-api-framework=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.event.inputs.image_tag || 'develop' }}
+
+      - name: Deploy to staging
+        run: |
+          kubectl apply -k infrastructure/kubernetes/staging/
+
+      - name: Wait for deployment rollout
+        run: |
+          kubectl rollout status deployment/staging-production-api \
+            -n ${{ env.KUBE_NAMESPACE }} \
+            --timeout=5m
+
+      - name: Run database migrations
+        run: |
+          # Get the first pod name
+          POD_NAME=$(kubectl get pods -n ${{ env.KUBE_NAMESPACE }} \
+            -l app=production-api \
+            -o jsonpath='{.items[0].metadata.name}')
+
+          echo "Running migrations on pod: $POD_NAME"
+
+          kubectl exec -n ${{ env.KUBE_NAMESPACE }} $POD_NAME -- \
+            npm run migration:run
+
+      - name: Verify deployment
+        run: |
+          echo "Checking deployment status..."
+          kubectl get deployment,pods,svc -n ${{ env.KUBE_NAMESPACE }}
+
+      - name: Get deployment info
+        id: deployment-info
+        run: |
+          INGRESS_IP=$(kubectl get ingress -n ${{ env.KUBE_NAMESPACE }} \
+            staging-production-api-ingress \
+            -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          echo "ingress_ip=$INGRESS_IP" >> $GITHUB_OUTPUT
+
+  # ===========================================================================
+  # Job 2: Smoke Tests
+  # ===========================================================================
+  smoke-tests:
+    name: Smoke Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: deploy-staging
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Wait for service to be ready
+        run: |
+          echo "Waiting for service to be fully ready..."
+          sleep 30
+
+      - name: Run smoke tests
+        run: |
+          chmod +x scripts/smoke-test.sh
+          ./scripts/smoke-test.sh https://staging-api.yourdomain.com
+
+      - name: Test health endpoint
+        run: |
+          response=$(curl -s -o /dev/null -w "%{http_code}" https://staging-api.yourdomain.com/health)
+          if [ $response -eq 200 ]; then
+            echo "✅ Health check passed"
+          else
+            echo "❌ Health check failed with status: $response"
+            exit 1
+          fi
+
+      - name: Test readiness endpoint
+        run: |
+          response=$(curl -s https://staging-api.yourdomain.com/ready)
+          echo "Readiness response: $response"
+
+          if echo "$response" | jq -e '.success == true' > /dev/null; then
+            echo "✅ Readiness check passed"
+          else
+            echo "❌ Readiness check failed"
+            exit 1
+          fi
+
+      - name: Test API endpoint
+        run: |
+          response=$(curl -s -o /dev/null -w "%{http_code}" https://staging-api.yourdomain.com/api/v1)
+          if [ $response -eq 200 ]; then
+            echo "✅ API endpoint is accessible"
+          else
+            echo "❌ API endpoint returned status: $response"
+            exit 1
+          fi
+
+  # ===========================================================================
+  # Job 3: Rollback on Failure
+  # ===========================================================================
+  rollback:
+    name: Rollback on Failure
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [deploy-staging, smoke-tests]
+    if: failure()
+
+    steps:
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+
+      - name: Configure kubectl
+        run: |
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.KUBE_CONFIG_STAGING }}" | base64 -d > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
+
+      - name: Rollback deployment
+        run: |
+          echo "⚠️ Deployment failed, rolling back..."
+          kubectl rollout undo deployment/staging-production-api \
+            -n ${{ env.KUBE_NAMESPACE }}
+
+          kubectl rollout status deployment/staging-production-api \
+            -n ${{ env.KUBE_NAMESPACE }} \
+            --timeout=3m
+
+      - name: Notify rollback
+        run: |
+          echo "❌ Deployment to staging failed and has been rolled back"
+
+  # ===========================================================================
+  # Job 4: Deployment Summary
+  # ===========================================================================
+  deployment-summary:
+    name: Deployment Summary
+    runs-on: ubuntu-latest
+    needs: [deploy-staging, smoke-tests]
+    if: always()
+
+    steps:
+      - name: Deployment status
+        run: |
+          echo "==================================================="
+          echo "Staging Deployment Summary"
+          echo "==================================================="
+          echo "Deployment: ${{ needs.deploy-staging.result }}"
+          echo "Smoke Tests: ${{ needs.smoke-tests.result }}"
+          echo "==================================================="
+
+          if [[ "${{ needs.deploy-staging.result }}" == "success" ]] && \
+             [[ "${{ needs.smoke-tests.result }}" == "success" ]]; then
+            echo "✅ Staging deployment successful!"
+            echo "🔗 URL: https://staging-api.yourdomain.com"
+          else
+            echo "❌ Staging deployment failed"
+            exit 1
+          fi
+
+# =============================================================================
+# Required GitHub Secrets:
+# =============================================================================
+#
+# KUBE_CONFIG_STAGING - Base64 encoded kubeconfig for staging cluster
+# STAGING_DB_USER - Database username
+# STAGING_DB_PASSWORD - Database password
+# STAGING_REDIS_PASSWORD - Redis password
+# STAGING_JWT_SECRET - JWT secret
+# STAGING_JWT_REFRESH_SECRET - JWT refresh secret
+#
+# To create KUBE_CONFIG_STAGING secret:
+# cat ~/.kube/config | base64 | pbcopy  # macOS
+# cat ~/.kube/config | base64 -w 0      # Linux
+#
+# =============================================================================

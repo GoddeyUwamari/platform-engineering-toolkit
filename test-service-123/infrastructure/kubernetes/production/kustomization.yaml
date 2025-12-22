@@ -1,0 +1,66 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+metadata:
+  name: production-api-production
+
+# Reference to base configuration
+bases:
+  - ../base
+
+# Namespace for production environment
+namespace: production-api-production
+
+# Production-specific name prefix
+namePrefix: prod-
+
+# Production-specific labels
+commonLabels:
+  environment: production
+  tier: backend
+
+# Production-specific annotations
+commonAnnotations:
+  environment: production
+  version: "1.0.0"
+
+# Images - use specific version tag for production
+images:
+  - name: ghcr.io/goddeyuwamari/production-api-framework
+    newTag: v1.0.0  # Use specific version, not 'latest'
+
+# Patches to override base configuration
+patchesStrategicMerge:
+  - deployment-patch.yaml
+  - configmap-patch.yaml
+  - ingress-patch.yaml
+  - hpa-patch.yaml
+
+# Resource adjustments for production
+replicas:
+  - name: production-api
+    count: 5
+
+# ConfigMap additions/overrides
+configMapGenerator:
+  - name: production-api-config
+    behavior: merge
+    literals:
+      - NODE_ENV=production
+      - LOG_LEVEL=info
+      - ENABLE_SWAGGER=false
+      - ENABLE_METRICS=true
+
+# =============================================================================
+# Deploy to Production:
+# =============================================================================
+#
+# kubectl apply -k infrastructure/kubernetes/production/
+#
+# OR with kustomize CLI:
+# kustomize build infrastructure/kubernetes/production/ | kubectl apply -f -
+#
+# Verify deployment:
+# kubectl get all -n production-api-production
+#
+# =============================================================================

@@ -1,0 +1,57 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: production-api-config
+  labels:
+    app: production-api
+data:
+  # Application Configuration
+  NODE_ENV: "production"
+  PORT: "3000"
+  HOST: "0.0.0.0"
+  API_VERSION: "v1"
+  APP_NAME: "production-api-framework"
+
+  # Database Configuration (non-sensitive)
+  DB_HOST: "postgres-service"
+  DB_PORT: "5432"
+  DB_NAME: "production_api"
+  DB_SSL: "true"
+  DB_POOL_MIN: "2"
+  DB_POOL_MAX: "10"
+
+  # Redis Configuration (non-sensitive)
+  REDIS_HOST: "redis-service"
+  REDIS_PORT: "6379"
+  REDIS_DB: "0"
+  REDIS_TTL: "3600"
+
+  # JWT Configuration
+  JWT_EXPIRES_IN: "7d"
+  JWT_REFRESH_EXPIRES_IN: "30d"
+
+  # Rate Limiting
+  RATE_LIMIT_WINDOW_MS: "900000"
+  RATE_LIMIT_MAX_REQUESTS: "100"
+
+  # Logging Configuration
+  LOG_LEVEL: "info"
+  LOG_FORMAT: "json"
+  ENABLE_REQUEST_LOGGING: "true"
+
+  # CORS Configuration
+  CORS_ENABLED: "true"
+  CORS_CREDENTIALS: "true"
+  ALLOWED_ORIGINS: "https://api.yourdomain.com,https://app.yourdomain.com"
+
+  # Security
+  HELMET_ENABLED: "true"
+  COMPRESSION_ENABLED: "true"
+
+  # Monitoring
+  ENABLE_METRICS: "true"
+  METRICS_PORT: "9090"
+
+  # Feature Flags
+  ENABLE_SWAGGER: "false"
+  ENABLE_GRAPHQL: "false"

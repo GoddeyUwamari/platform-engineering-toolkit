@@ -1,0 +1,117 @@
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: production-api-hpa
+  labels:
+    app: production-api
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: production-api
+
+  minReplicas: 2
+  maxReplicas: 10
+
+  # Scaling behavior
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 50
+          periodSeconds: 60
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+      selectPolicy: Min
+
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 30
+        - type: Pods
+          value: 4
+          periodSeconds: 30
+      selectPolicy: Max
+
+  # Metrics to scale on
+  metrics:
+    # CPU utilization
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+
+    # Memory utilization
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+
+    # Custom metric: Requests per second (requires metrics-server)
+    # - type: Pods
+    #   pods:
+    #     metric:
+    #       name: http_requests_per_second
+    #     target:
+    #       type: AverageValue
+    #       averageValue: "1000"
+
+# =============================================================================
+# HPA Configuration Explanation:
+# =============================================================================
+#
+# minReplicas: 2
+#   - Minimum number of pods to maintain
+#   - Ensures high availability
+#
+# maxReplicas: 10
+#   - Maximum number of pods allowed
+#   - Prevents runaway scaling and cost
+#
+# CPU Target: 70%
+#   - Scale up when average CPU across all pods > 70%
+#   - Leaves 30% headroom for spikes
+#
+# Memory Target: 80%
+#   - Scale up when average memory > 80%
+#   - Memory is less flexible than CPU
+#
+# Scale Down:
+#   - Stabilization: 5 minutes (prevent flapping)
+#   - Conservative: Max 50% reduction per minute
+#   - Gradual: Max 2 pods per minute
+#
+# Scale Up:
+#   - Aggressive: Immediate response (0s stabilization)
+#   - Fast: 100% increase per 30 seconds
+#   - Or add 4 pods per 30 seconds (whichever is larger)
+#
+# =============================================================================
+# Requirements:
+# =============================================================================
+#
+# 1. Metrics Server must be installed:
+#    kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+#
+# 2. Resource requests must be defined in Deployment
+#
+# 3. For custom metrics, install Prometheus Adapter:
+#    helm install prometheus-adapter prometheus-community/prometheus-adapter
+#
+# =============================================================================
+# Verify HPA:
+# =============================================================================
+#
+# kubectl get hpa production-api-hpa
+# kubectl describe hpa production-api-hpa
+# kubectl get hpa production-api-hpa --watch
+#
+# =============================================================================

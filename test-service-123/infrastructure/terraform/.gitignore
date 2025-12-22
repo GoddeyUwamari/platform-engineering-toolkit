@@ -1,0 +1,13 @@
+# Terraform
+*.tfstate
+*.tfstate.backup
+*.tfvars
+.terraform/
+.terraform.lock.hcl
+
+# AWS/SSH Keys
+*.pem
+*.key
+
+# OS
+.DS_Store
