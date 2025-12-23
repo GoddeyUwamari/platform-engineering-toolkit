@@ -27,6 +27,22 @@ platform create api my-service --github
 Total: 30 seconds
 ```
 
+## 📸 See It In Action
+
+### GitHub Integration - One Command, Complete Automation
+![GitHub Integration](docs/screenshots/platform-github-success.png)
+
+### Interactive Mode - Guided Setup
+![Interactive Mode](docs/screenshots/platform-interactive.png)
+
+### Template Information
+![Template Info](docs/screenshots/platform-info.png)
+
+### Available Templates
+![Template List](docs/screenshots/platform-list.png)
+
+---
+
 ## ✨ Features
 
 - 🎨 **Multiple Templates** - Node.js API, Microservices architectures
