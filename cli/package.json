@@ -17,6 +17,12 @@
   "author": "Goddey Uwamari",
   "license": "MIT",
   "dependencies": {
+    "@aws-sdk/client-cloudwatch": "^3.699.0",
+    "@aws-sdk/client-cloudwatch-logs": "^3.699.0",
+    "@aws-sdk/client-ec2": "^3.699.0",
+    "@aws-sdk/client-pricing": "^3.699.0",
+    "@aws-sdk/client-rds": "^3.699.0",
+    "@aws-sdk/client-sts": "^3.699.0",
     "@octokit/rest": "^22.0.1",
     "chalk": "^4.1.2",
     "commander": "^12.1.0",

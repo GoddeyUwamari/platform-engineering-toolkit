@@ -10,6 +10,16 @@ const { Octokit } = require('@octokit/rest');
 const simpleGit = require('simple-git');
 const Conf = require('conf');
 const open = require('open');
+const { exec, spawn } = require('child_process');
+const util = require('util');
+const execPromise = util.promisify(exec);
+
+// AWS SDK imports
+const { EC2Client, DescribeInstancesCommand, DescribeVpcsCommand } = require('@aws-sdk/client-ec2');
+const { RDSClient, DescribeDBInstancesCommand } = require('@aws-sdk/client-rds');
+const { STSClient, GetCallerIdentityCommand } = require('@aws-sdk/client-sts');
+const { CloudWatchClient, GetMetricStatisticsCommand } = require('@aws-sdk/client-cloudwatch');
+const { CloudWatchLogsClient, DescribeLogStreamsCommand, GetLogEventsCommand, FilterLogEventsCommand } = require('@aws-sdk/client-cloudwatch-logs');
 
 const program = new Command();
 
@@ -24,11 +34,23 @@ const config = new Conf({
       defaultVisibility: 'public',
       defaultOrg: null
     },
+    aws: {
+      accessKeyId: null,
+      secretAccessKey: null,
+      region: 'us-east-1',
+      accountId: null
+    },
     preferences: {
       autoGitInit: true,
       autoNpmInstall: false
     }
   }
+});
+
+// Deployment state configuration
+const deploymentsConfig = new Conf({
+  projectName: 'platform-toolkit-deployments',
+  defaults: {}
 });
 
 // Template metadata
@@ -88,6 +110,277 @@ function validateServiceName(name) {
   }
 
   return true;
+}
+
+// ============================================================================
+// AWS Helper Functions
+// ============================================================================
+
+function getAWSClients() {
+  const accessKeyId = config.get('aws.accessKeyId');
+  const secretAccessKey = config.get('aws.secretAccessKey');
+  const region = config.get('aws.region');
+
+  if (!accessKeyId || !secretAccessKey) {
+    return null;
+  }
+
+  const credentials = {
+    accessKeyId,
+    secretAccessKey
+  };
+
+  return {
+    ec2: new EC2Client({ region, credentials }),
+    rds: new RDSClient({ region, credentials }),
+    sts: new STSClient({ region, credentials }),
+    cloudwatch: new CloudWatchClient({ region, credentials }),
+    logs: new CloudWatchLogsClient({ region, credentials })
+  };
+}
+
+async function verifyAWSCredentials() {
+  try {
+    const clients = getAWSClients();
+    if (!clients) {
+      return { success: false, error: 'AWS credentials not configured' };
+    }
+
+    const command = new GetCallerIdentityCommand({});
+    const response = await clients.sts.send(command);
+
+    return {
+      success: true,
+      account: response.Account,
+      arn: response.Arn,
+      userId: response.UserId
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+}
+
+async function getEC2Instances(serviceName) {
+  try {
+    const clients = getAWSClients();
+    if (!clients) return [];
+
+    const command = new DescribeInstancesCommand({
+      Filters: [
+        {
+          Name: 'tag:Project',
+          Values: [serviceName]
+        },
+        {
+          Name: 'instance-state-name',
+          Values: ['running', 'pending', 'stopping', 'stopped']
+        }
+      ]
+    });
+
+    const response = await clients.ec2.send(command);
+    const instances = [];
+
+    for (const reservation of response.Reservations || []) {
+      for (const instance of reservation.Instances || []) {
+        instances.push(instance);
+      }
+    }
+
+    return instances;
+  } catch (error) {
+    console.error(chalk.gray(`Failed to fetch EC2 instances: ${error.message}`));
+    return [];
+  }
+}
+
+async function getRDSInstances(serviceName) {
+  try {
+    const clients = getAWSClients();
+    if (!clients) return [];
+
+    const command = new DescribeDBInstancesCommand({});
+    const response = await clients.rds.send(command);
+
+    // Filter by tags
+    const instances = (response.DBInstances || []).filter(db => {
+      return db.DBInstanceIdentifier && db.DBInstanceIdentifier.includes(serviceName);
+    });
+
+    return instances;
+  } catch (error) {
+    console.error(chalk.gray(`Failed to fetch RDS instances: ${error.message}`));
+    return [];
+  }
+}
+
+// ============================================================================
+// Terraform Helper Functions
+// ============================================================================
+
+async function checkTerraformInstalled() {
+  try {
+    await execPromise('terraform version');
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+async function runTerraform(command, workingDir, options = {}) {
+  return new Promise((resolve, reject) => {
+    const args = command.split(' ');
+    const terraformProcess = spawn('terraform', args, {
+      cwd: workingDir,
+      stdio: options.silent ? 'pipe' : 'inherit',
+      env: {
+        ...process.env,
+        TF_IN_AUTOMATION: 'true',
+        TF_INPUT: 'false'
+      }
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    if (options.silent) {
+      terraformProcess.stdout.on('data', (data) => {
+        stdout += data.toString();
+      });
+
+      terraformProcess.stderr.on('data', (data) => {
+        stderr += data.toString();
+      });
+    }
+
+    terraformProcess.on('close', (code) => {
+      if (code === 0) {
+        resolve({ success: true, stdout, stderr });
+      } else {
+        reject(new Error(`Terraform command failed with code ${code}\n${stderr}`));
+      }
+    });
+
+    terraformProcess.on('error', (error) => {
+      reject(error);
+    });
+  });
+}
+
+async function getTerraformOutputs(workingDir) {
+  try {
+    const { stdout } = await execPromise('terraform output -json', { cwd: workingDir });
+    return JSON.parse(stdout);
+  } catch (error) {
+    return {};
+  }
+}
+
+function generateTerraformVars(serviceName, environment, customVars = {}) {
+  const region = config.get('aws.region');
+
+  return {
+    project_name: serviceName,
+    environment: environment,
+    aws_region: region,
+    ...customVars
+  };
+}
+
+async function writeTerraformVarsFile(workingDir, vars) {
+  const varFileContent = Object.entries(vars)
+    .map(([key, value]) => {
+      if (typeof value === 'string') {
+        return `${key} = "${value}"`;
+      } else if (typeof value === 'boolean') {
+        return `${key} = ${value}`;
+      } else if (typeof value === 'number') {
+        return `${key} = ${value}`;
+      }
+      return `${key} = "${value}"`;
+    })
+    .join('\n');
+
+  const varFilePath = path.join(workingDir, 'terraform.tfvars');
+  await fs.writeFile(varFilePath, varFileContent);
+  return varFilePath;
+}
+
+// ============================================================================
+// Cost Estimation Functions
+// ============================================================================
+
+function estimateMonthlyCost(instanceType, dbInstanceClass, environment) {
+  // Free tier limits (first 12 months)
+  const freeTier = {
+    ec2Hours: 750, // t2.micro hours per month
+    rdsHours: 750, // db.t3.micro hours per month
+    storage: 30, // GB (20 RDS + 30 EBS, combined limit)
+    dataTransfer: 15 // GB per month
+  };
+
+  // Pricing (us-east-1, approximate)
+  const pricing = {
+    ec2: {
+      't2.micro': 0.0116,
+      't2.small': 0.023,
+      't2.medium': 0.0464,
+      't3.micro': 0.0104,
+      't3.small': 0.0208
+    },
+    rds: {
+      'db.t3.micro': 0.017,
+      'db.t3.small': 0.034,
+      'db.t4g.micro': 0.016,
+      'db.t4g.small': 0.032
+    },
+    storage: 0.10, // per GB per month (EBS gp3)
+    rdsStorage: 0.115, // per GB per month (RDS)
+    dataTransfer: 0.09 // per GB after 1GB free
+  };
+
+  const hoursPerMonth = 730;
+  const storageGB = 20;
+  const rdsStorageGB = 20;
+  const dataTransferGB = 1;
+
+  // Calculate EC2 cost
+  const ec2HourlyCost = pricing.ec2[instanceType] || pricing.ec2['t2.micro'];
+  const ec2Cost = ec2HourlyCost * hoursPerMonth;
+
+  // Calculate RDS cost
+  const rdsHourlyCost = pricing.rds[dbInstanceClass] || pricing.rds['db.t3.micro'];
+  const rdsComputeCost = rdsHourlyCost * hoursPerMonth;
+  const rdsStorageCost = pricing.rdsStorage * rdsStorageGB;
+
+  // Calculate storage cost
+  const ebsStorageCost = pricing.storage * storageGB;
+
+  // Calculate data transfer
+  const dataTransferCost = Math.max(0, dataTransferGB - 1) * pricing.dataTransfer;
+
+  // CloudWatch (basic metrics are free, but include estimate for custom)
+  const cloudwatchCost = 3.00;
+
+  const totalWithoutFreeTier = ec2Cost + rdsComputeCost + rdsStorageCost + ebsStorageCost + dataTransferCost + cloudwatchCost;
+
+  // With free tier (assuming eligible)
+  const withFreeTier = 0; // Free tier covers t2.micro + db.t3.micro + 30GB storage
+
+  return {
+    breakdown: {
+      ec2: { hourly: ec2HourlyCost, monthly: ec2Cost },
+      rds: { hourly: rdsHourlyCost, compute: rdsComputeCost, storage: rdsStorageCost },
+      storage: ebsStorageCost,
+      dataTransfer: dataTransferCost,
+      cloudwatch: cloudwatchCost
+    },
+    withFreeTier: withFreeTier,
+    withoutFreeTier: totalWithoutFreeTier
+  };
 }
 
 // ============================================================================
@@ -719,6 +1012,627 @@ github
       console.error(chalk.red(`\nError: ${error.message}\n`));
       process.exit(1);
     }
+  });
+
+// ============================================================================
+// AWS Commands
+// ============================================================================
+
+const aws = program
+  .command('aws')
+  .description('AWS integration commands');
+
+// AWS configure
+aws
+  .command('configure')
+  .description('Configure AWS credentials')
+  .action(async () => {
+    console.log(chalk.cyan.bold('\n☁️  AWS Configuration\n'));
+
+    const answers = await inquirer.prompt([
+      {
+        type: 'password',
+        name: 'accessKeyId',
+        message: 'AWS Access Key ID:',
+        mask: '*',
+        validate: (input) => {
+          if (!input || input.trim().length === 0) {
+            return 'Access Key ID is required';
+          }
+          if (!input.startsWith('AKIA')) {
+            return 'Access Key ID should start with AKIA';
+          }
+          return true;
+        }
+      },
+      {
+        type: 'password',
+        name: 'secretAccessKey',
+        message: 'AWS Secret Access Key:',
+        mask: '*',
+        validate: (input) => {
+          if (!input || input.trim().length === 0) {
+            return 'Secret Access Key is required';
+          }
+          if (input.length < 20) {
+            return 'Secret Access Key seems too short';
+          }
+          return true;
+        }
+      },
+      {
+        type: 'input',
+        name: 'region',
+        message: 'Default Region:',
+        default: 'us-east-1',
+        validate: (input) => {
+          if (!/^[a-z]{2}-[a-z]+-[0-9]{1}$/.test(input)) {
+            return 'Invalid region format (e.g., us-east-1)';
+          }
+          return true;
+        }
+      },
+      {
+        type: 'confirm',
+        name: 'confirm',
+        message: 'Confirm configuration?',
+        default: true
+      }
+    ]);
+
+    if (!answers.confirm) {
+      console.log(chalk.yellow('\nConfiguration cancelled\n'));
+      return;
+    }
+
+    // Save credentials temporarily
+    config.set('aws.accessKeyId', answers.accessKeyId);
+    config.set('aws.secretAccessKey', answers.secretAccessKey);
+    config.set('aws.region', answers.region);
+
+    // Verify credentials
+    const spinner = ora('Verifying credentials...').start();
+    const result = await verifyAWSCredentials();
+
+    if (result.success) {
+      config.set('aws.accountId', result.account);
+      spinner.succeed(chalk.green('AWS credentials saved'));
+
+      console.log(chalk.cyan('\nConnection verified:'));
+      console.log(chalk.gray(`  Account ID: ${result.account}`));
+      console.log(chalk.gray(`  Region: ${answers.region}`));
+      console.log(chalk.gray(`  Config: ${config.path}\n`));
+    } else {
+      // Remove invalid credentials
+      config.delete('aws.accessKeyId');
+      config.delete('aws.secretAccessKey');
+      config.delete('aws.accountId');
+
+      spinner.fail(chalk.red('Credential verification failed'));
+      console.error(chalk.red(`Error: ${result.error}`));
+      console.log(chalk.yellow('\nPlease check your credentials and try again.'));
+      console.log(chalk.cyan('Create credentials at: https://console.aws.amazon.com/iam/\n'));
+      process.exit(1);
+    }
+  });
+
+// AWS status
+aws
+  .command('status')
+  .description('Check AWS connection and account info')
+  .action(async () => {
+    const accessKeyId = config.get('aws.accessKeyId');
+    const region = config.get('aws.region');
+
+    if (!accessKeyId) {
+      console.log(chalk.yellow('\n⚠️  AWS credentials not configured'));
+      console.log(chalk.cyan('\nTo configure:'));
+      console.log(chalk.gray('  platform aws configure\n'));
+      return;
+    }
+
+    const spinner = ora('Checking AWS connection...').start();
+    const result = await verifyAWSCredentials();
+
+    if (result.success) {
+      spinner.succeed(chalk.green('Connected to AWS\n'));
+
+      console.log(chalk.cyan('Account:  ') + chalk.white(result.account));
+      console.log(chalk.cyan('Region:   ') + chalk.white(region));
+      console.log(chalk.cyan('User ARN: ') + chalk.gray(result.arn));
+      console.log(chalk.cyan('Config:   ') + chalk.gray(config.path));
+      console.log();
+    } else {
+      spinner.fail(chalk.red('Connection failed'));
+      console.error(chalk.red(`Error: ${result.error}`));
+      console.log(chalk.yellow('\nYour credentials may be invalid or expired.'));
+      console.log(chalk.cyan('To reconfigure:'));
+      console.log(chalk.gray('  platform aws configure\n'));
+    }
+  });
+
+// AWS costs
+aws
+  .command('costs')
+  .description('View estimated AWS costs')
+  .action(async () => {
+    const accessKeyId = config.get('aws.accessKeyId');
+
+    if (!accessKeyId) {
+      console.log(chalk.yellow('\n⚠️  AWS credentials not configured'));
+      console.log(chalk.cyan('Run: platform aws configure\n'));
+      return;
+    }
+
+    console.log(chalk.cyan.bold('\n💰 AWS Cost Estimation\n'));
+
+    // Get all deployments
+    const deployments = deploymentsConfig.store;
+    const deploymentKeys = Object.keys(deployments);
+
+    if (deploymentKeys.length === 0) {
+      console.log(chalk.yellow('No active deployments found.'));
+      console.log(chalk.cyan('\nDeploy a service first:'));
+      console.log(chalk.gray('  platform deploy aws my-service\n'));
+      return;
+    }
+
+    let totalWithFreeTier = 0;
+    let totalWithoutFreeTier = 0;
+
+    console.log(chalk.white('Active Deployments:\n'));
+
+    for (const serviceName of deploymentKeys) {
+      const deployment = deployments[serviceName];
+      const estimate = estimateMonthlyCost(
+        deployment.instanceType || 't2.micro',
+        deployment.dbInstanceClass || 'db.t3.micro',
+        deployment.environment
+      );
+
+      console.log(chalk.green.bold(`${serviceName} (${deployment.environment})`));
+      console.log(chalk.gray(`  EC2: ${deployment.instanceType || 't2.micro'} - $${estimate.breakdown.ec2.monthly.toFixed(2)}/mo`));
+      console.log(chalk.gray(`  RDS: ${deployment.dbInstanceClass || 'db.t3.micro'} - $${estimate.breakdown.rds.compute.toFixed(2)}/mo`));
+      console.log(chalk.gray(`  Storage: $${(estimate.breakdown.storage + estimate.breakdown.rds.storage).toFixed(2)}/mo`));
+      console.log();
+
+      totalWithFreeTier += estimate.withFreeTier;
+      totalWithoutFreeTier += estimate.withoutFreeTier;
+    }
+
+    console.log(chalk.cyan('Total Monthly Cost:'));
+    console.log(chalk.green(`  With Free Tier:    $${totalWithFreeTier.toFixed(2)}/mo`));
+    console.log(chalk.white(`  Without Free Tier: $${totalWithoutFreeTier.toFixed(2)}/mo`));
+    console.log();
+
+    console.log(chalk.gray('Note: Costs are estimates. Check AWS Console for actual usage.'));
+    console.log(chalk.gray('Free tier expires 12 months after AWS account creation.\n'));
+  });
+
+// ============================================================================
+// Deploy Commands
+// ============================================================================
+
+const deploy = program
+  .command('deploy')
+  .description('Deployment management commands');
+
+// Deploy to AWS
+deploy
+  .command('aws <service>')
+  .description('Deploy service to AWS')
+  .option('-e, --env <environment>', 'Environment (development, staging, production)', 'development')
+  .option('-y, --yes', 'Skip confirmations')
+  .option('--db-password <password>', 'Database password (min 8 characters)')
+  .action(async (service, cmdOptions) => {
+    // Check AWS credentials
+    const accessKeyId = config.get('aws.accessKeyId');
+    if (!accessKeyId) {
+      console.log(chalk.red('\n❌ AWS credentials not configured'));
+      console.log(chalk.cyan('Run: platform aws configure\n'));
+      process.exit(1);
+    }
+
+    // Check Terraform
+    const hasTerraform = await checkTerraformInstalled();
+    if (!hasTerraform) {
+      console.log(chalk.red('\n❌ Terraform not found'));
+      console.log(chalk.cyan('\nInstall Terraform:'));
+      console.log(chalk.gray('  macOS:  brew install terraform'));
+      console.log(chalk.gray('  Linux:  https://terraform.io/downloads'));
+      console.log(chalk.gray('  Windows: choco install terraform\n'));
+      process.exit(1);
+    }
+
+    // Find service directory
+    const servicePath = path.join(process.cwd(), service);
+    const terraformDir = path.join(servicePath, 'infrastructure', 'terraform');
+
+    if (!fs.existsSync(terraformDir)) {
+      console.log(chalk.red(`\n❌ Terraform configuration not found`));
+      console.log(chalk.gray(`Expected: ${terraformDir}\n`));
+      process.exit(1);
+    }
+
+    console.log(chalk.cyan.bold(`\n☁️  Deploying ${service} to AWS\n`));
+
+    const environment = cmdOptions.env;
+
+    // Get DB password
+    let dbPassword = cmdOptions.dbPassword;
+    if (!dbPassword) {
+      const { password } = await inquirer.prompt([
+        {
+          type: 'password',
+          name: 'password',
+          message: 'Database password (min 8 characters):',
+          mask: '*',
+          validate: (input) => {
+            if (input.length < 8) {
+              return 'Password must be at least 8 characters';
+            }
+            return true;
+          }
+        }
+      ]);
+      dbPassword = password;
+    }
+
+    // Instance sizing based on environment
+    const instanceConfig = {
+      development: { ec2: 't2.micro', rds: 'db.t3.micro' },
+      staging: { ec2: 't2.small', rds: 'db.t3.small' },
+      production: { ec2: 't3.medium', rds: 'db.t3.small' }
+    };
+
+    const config_env = instanceConfig[environment] || instanceConfig.development;
+
+    // Show cost estimate
+    const estimate = estimateMonthlyCost(config_env.ec2, config_env.rds, environment);
+
+    console.log(chalk.cyan('Configuration:'));
+    console.log(chalk.gray(`  Environment: ${environment}`));
+    console.log(chalk.gray(`  EC2: ${config_env.ec2}`));
+    console.log(chalk.gray(`  RDS: ${config_env.rds}`));
+    console.log(chalk.gray(`  Region: ${config.get('aws.region')}\n`));
+
+    console.log(chalk.cyan('Estimated Monthly Cost:'));
+    console.log(chalk.green(`  With Free Tier:    $${estimate.withFreeTier.toFixed(2)}/mo`));
+    console.log(chalk.white(`  Without Free Tier: $${estimate.withoutFreeTier.toFixed(2)}/mo\n`));
+
+    // Confirm deployment
+    if (!cmdOptions.yes) {
+      const { confirm } = await inquirer.prompt([
+        {
+          type: 'confirm',
+          name: 'confirm',
+          message: 'Proceed with deployment?',
+          default: true
+        }
+      ]);
+
+      if (!confirm) {
+        console.log(chalk.yellow('\nDeployment cancelled\n'));
+        return;
+      }
+    }
+
+    try {
+      // Generate terraform vars
+      const tfVars = generateTerraformVars(service, environment, {
+        ec2_instance_type: config_env.ec2,
+        rds_instance_class: config_env.rds,
+        db_password: dbPassword
+      });
+
+      await writeTerraformVarsFile(terraformDir, tfVars);
+
+      // Terraform init
+      let spinner = ora('Initializing Terraform...').start();
+      await runTerraform('init', terraformDir);
+      spinner.succeed(chalk.green('Terraform initialized'));
+
+      // Terraform plan
+      spinner = ora('Planning infrastructure...').start();
+      await runTerraform('plan', terraformDir);
+      spinner.succeed(chalk.green('Infrastructure plan complete'));
+
+      // Terraform apply
+      spinner = ora('Deploying infrastructure (this may take 10-15 minutes)...').start();
+      await runTerraform('apply -auto-approve', terraformDir);
+      spinner.succeed(chalk.green('Infrastructure deployed'));
+
+      // Get outputs
+      spinner = ora('Retrieving deployment information...').start();
+      const outputs = await getTerraformOutputs(terraformDir);
+      spinner.succeed(chalk.green('Deployment complete!'));
+
+      // Save deployment state
+      deploymentsConfig.set(service, {
+        service,
+        environment,
+        region: config.get('aws.region'),
+        deployedAt: new Date().toISOString(),
+        deployedBy: config.get('github.username') || 'local',
+        status: 'running',
+        instanceType: config_env.ec2,
+        dbInstanceClass: config_env.rds,
+        outputs: outputs
+      });
+
+      // Display results
+      console.log(chalk.green.bold('\n✅ Deployment Complete!\n'));
+
+      if (outputs.ec2_public_ip && outputs.ec2_public_ip.value) {
+        console.log(chalk.cyan('Application URL:'));
+        console.log(chalk.white(`  http://${outputs.ec2_public_ip.value}:3000\n`));
+      }
+
+      console.log(chalk.cyan('Next steps:'));
+      console.log(chalk.gray(`  platform deploy status ${service}`));
+      console.log(chalk.gray(`  platform deploy logs ${service}`));
+      console.log(chalk.gray(`  platform deploy destroy ${service} (when done)\n`));
+
+    } catch (error) {
+      console.error(chalk.red(`\n❌ Deployment failed: ${error.message}\n`));
+      process.exit(1);
+    }
+  });
+
+// Deployment status
+deploy
+  .command('status <service>')
+  .description('Check deployment status')
+  .action(async (service) => {
+    const deployment = deploymentsConfig.get(service);
+
+    if (!deployment) {
+      console.log(chalk.yellow(`\n⚠️  No deployment found for "${service}"\n`));
+      return;
+    }
+
+    console.log(chalk.cyan.bold(`\n📊 Deployment Status: ${service}\n`));
+
+    const spinner = ora('Fetching resource status...').start();
+
+    try {
+      // Get EC2 instances
+      const ec2Instances = await getEC2Instances(service);
+      const rdsInstances = await getRDSInstances(service);
+
+      spinner.stop();
+
+      console.log(chalk.cyan('Deployment Info:'));
+      console.log(chalk.gray(`  Environment: ${deployment.environment}`));
+      console.log(chalk.gray(`  Region: ${deployment.region}`));
+      console.log(chalk.gray(`  Deployed: ${new Date(deployment.deployedAt).toLocaleString()}`));
+      console.log(chalk.gray(`  Deployed By: ${deployment.deployedBy}\n`));
+
+      console.log(chalk.cyan('Infrastructure:'));
+
+      if (ec2Instances.length > 0) {
+        const instance = ec2Instances[0];
+        const state = instance.State.Name;
+        const stateIcon = state === 'running' ? '✅' : '⚠️';
+        console.log(chalk.gray(`  ${stateIcon} EC2: ${instance.InstanceId} (${instance.InstanceType}, ${state})`));
+        if (instance.PublicIpAddress) {
+          console.log(chalk.gray(`     URL: http://${instance.PublicIpAddress}:3000`));
+        }
+      }
+
+      if (rdsInstances.length > 0) {
+        const db = rdsInstances[0];
+        const statusIcon = db.DBInstanceStatus === 'available' ? '✅' : '⚠️';
+        console.log(chalk.gray(`  ${statusIcon} RDS: ${db.DBInstanceIdentifier} (${db.DBInstanceClass}, ${db.DBInstanceStatus})`));
+      }
+
+      console.log();
+
+    } catch (error) {
+      spinner.fail(chalk.red('Failed to fetch status'));
+      console.error(chalk.gray(error.message + '\n'));
+    }
+  });
+
+// Deployment logs
+deploy
+  .command('logs <service>')
+  .description('View deployment logs')
+  .option('-f, --follow', 'Follow log output (streams live logs)')
+  .option('-n, --lines <number>', 'Number of lines to show', '50')
+  .action(async (service, cmdOptions) => {
+    const deployment = deploymentsConfig.get(service);
+
+    if (!deployment) {
+      console.log(chalk.yellow(`\n⚠️  No deployment found for "${service}"\n`));
+      return;
+    }
+
+    const logGroupName = `/aws/ec2/${service}`;
+
+    console.log(chalk.cyan(`\n📋 Logs for ${service}\n`));
+
+    try {
+      const clients = getAWSClients();
+      if (!clients) {
+        console.log(chalk.red('AWS credentials not configured\n'));
+        return;
+      }
+
+      // Get log streams
+      const streamsCommand = new DescribeLogStreamsCommand({
+        logGroupName: logGroupName,
+        orderBy: 'LastEventTime',
+        descending: true,
+        limit: 1
+      });
+
+      const streams = await clients.logs.send(streamsCommand);
+
+      if (!streams.logStreams || streams.logStreams.length === 0) {
+        console.log(chalk.yellow('No logs available yet.'));
+        console.log(chalk.gray('Logs may take a few minutes to appear after deployment.\n'));
+        return;
+      }
+
+      const logStreamName = streams.logStreams[0].logStreamName;
+
+      // Get log events
+      const eventsCommand = new FilterLogEventsCommand({
+        logGroupName: logGroupName,
+        logStreamNames: [logStreamName],
+        limit: parseInt(cmdOptions.lines)
+      });
+
+      const events = await clients.logs.send(eventsCommand);
+
+      if (events.events && events.events.length > 0) {
+        events.events.forEach(event => {
+          const timestamp = new Date(event.timestamp).toLocaleTimeString();
+          console.log(chalk.gray(`[${timestamp}] `) + event.message);
+        });
+      } else {
+        console.log(chalk.yellow('No log events found\n'));
+      }
+
+      console.log();
+
+      if (cmdOptions.follow) {
+        console.log(chalk.cyan('Following logs... (Ctrl+C to stop)\n'));
+        // In a real implementation, you'd set up a loop to poll for new logs
+        console.log(chalk.yellow('Note: Live log streaming requires additional implementation\n'));
+      }
+
+    } catch (error) {
+      if (error.name === 'ResourceNotFoundException') {
+        console.log(chalk.yellow('Log group not found.'));
+        console.log(chalk.gray('CloudWatch logs may not be configured for this service.\n'));
+      } else {
+        console.error(chalk.red(`Error: ${error.message}\n`));
+      }
+    }
+  });
+
+// Destroy deployment
+deploy
+  .command('destroy <service>')
+  .description('Destroy AWS resources for a service')
+  .action(async (service) => {
+    const deployment = deploymentsConfig.get(service);
+
+    if (!deployment) {
+      console.log(chalk.yellow(`\n⚠️  No deployment found for "${service}"\n`));
+      return;
+    }
+
+    const servicePath = path.join(process.cwd(), service);
+    const terraformDir = path.join(servicePath, 'infrastructure', 'terraform');
+
+    if (!fs.existsSync(terraformDir)) {
+      console.log(chalk.red(`\n❌ Terraform configuration not found at ${terraformDir}\n`));
+      return;
+    }
+
+    console.log(chalk.red.bold('\n⚠️  WARNING: Resource Destruction\n'));
+    console.log(chalk.yellow(`This will permanently delete all AWS resources for "${service}":`));
+    console.log(chalk.gray(`  • EC2 instances`));
+    console.log(chalk.gray(`  • RDS database (DATA WILL BE LOST)`));
+    console.log(chalk.gray(`  • VPC and networking`));
+    console.log(chalk.gray(`  • Security groups\n`));
+
+    // Confirm with service name
+    const { confirmName } = await inquirer.prompt([
+      {
+        type: 'input',
+        name: 'confirmName',
+        message: 'Type service name to confirm:',
+        validate: (input) => {
+          if (input !== service) {
+            return `Please type "${service}" to confirm`;
+          }
+          return true;
+        }
+      }
+    ]);
+
+    const { finalConfirm } = await inquirer.prompt([
+      {
+        type: 'confirm',
+        name: 'finalConfirm',
+        message: 'Are you absolutely sure?',
+        default: false
+      }
+    ]);
+
+    if (!finalConfirm) {
+      console.log(chalk.yellow('\nDestruction cancelled\n'));
+      return;
+    }
+
+    try {
+      const spinner = ora('Destroying resources...').start();
+
+      await runTerraform('destroy -auto-approve', terraformDir);
+
+      spinner.succeed(chalk.green('All resources destroyed'));
+
+      // Remove from deployment state
+      deploymentsConfig.delete(service);
+
+      console.log(chalk.green.bold('\n✅ Cleanup Complete\n'));
+
+      const estimate = estimateMonthlyCost(
+        deployment.instanceType || 't2.micro',
+        deployment.dbInstanceClass || 'db.t3.micro',
+        deployment.environment
+      );
+
+      console.log(chalk.cyan('Estimated monthly savings:'));
+      console.log(chalk.gray(`  $${estimate.withoutFreeTier.toFixed(2)}/mo\n`));
+
+    } catch (error) {
+      console.error(chalk.red(`\n❌ Destruction failed: ${error.message}\n`));
+      process.exit(1);
+    }
+  });
+
+// Cost estimate
+deploy
+  .command('estimate <service>')
+  .description('Estimate deployment costs')
+  .option('-e, --env <environment>', 'Environment', 'development')
+  .action(async (service, cmdOptions) => {
+    const environment = cmdOptions.env;
+
+    const instanceConfig = {
+      development: { ec2: 't2.micro', rds: 'db.t3.micro' },
+      staging: { ec2: 't2.small', rds: 'db.t3.small' },
+      production: { ec2: 't3.medium', rds: 'db.t3.small' }
+    };
+
+    const config_env = instanceConfig[environment] || instanceConfig.development;
+    const estimate = estimateMonthlyCost(config_env.ec2, config_env.rds, environment);
+
+    console.log(chalk.cyan.bold(`\n📊 Cost Estimate for ${service} (${environment})\n`));
+
+    console.log(chalk.white('Monthly Costs:'));
+    console.log(chalk.gray('━'.repeat(60)));
+    console.log(chalk.gray('Service         Type           Free Tier    After'));
+    console.log(chalk.gray('━'.repeat(60)));
+
+    console.log(chalk.gray(`EC2             ${config_env.ec2.padEnd(15)} $0/mo        $${estimate.breakdown.ec2.monthly.toFixed(2)}/mo`));
+    console.log(chalk.gray(`RDS             ${config_env.rds.padEnd(15)} $0/mo        $${estimate.breakdown.rds.compute.toFixed(2)}/mo`));
+    console.log(chalk.gray(`Storage         40GB EBS       $0/mo        $${(estimate.breakdown.storage + estimate.breakdown.rds.storage).toFixed(2)}/mo`));
+    console.log(chalk.gray(`CloudWatch      Basic          $0/mo        $${estimate.breakdown.cloudwatch.toFixed(2)}/mo`));
+    console.log(chalk.gray('━'.repeat(60)));
+    console.log(chalk.green.bold(`Total                          $${estimate.withFreeTier.toFixed(2)}/mo        $${estimate.withoutFreeTier.toFixed(2)}/mo`));
+    console.log(chalk.gray('━'.repeat(60)));
+
+    console.log(chalk.cyan('\nFree Tier Notes:'));
+    console.log(chalk.gray('  • 750 hours/month EC2 t2.micro (first 12 months)'));
+    console.log(chalk.gray('  • 750 hours/month RDS db.t3.micro (first 12 months)'));
+    console.log(chalk.gray('  • 30 GB storage (combined EBS + RDS)'));
+    console.log(chalk.gray('  • Expires 12 months after AWS account creation\n'));
   });
 
 program.parse(process.argv);

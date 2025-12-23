@@ -47,10 +47,12 @@ Total: 30 seconds
 
 - 🎨 **Multiple Templates** - Node.js API, Microservices architectures
 - 🐙 **GitHub Integration** - Auto-create repos and push code
-- 🏗️ **Production-Ready** - Docker, Kubernetes, CI/CD included
+- ☁️ **AWS Deployment** - One-command deployment to AWS with Terraform
+- 🏗️ **Production-Ready** - Docker, Kubernetes, CI/CD, AWS infrastructure included
 - 🎯 **Interactive Mode** - Guided prompts for easy setup
-- ⚡ **Fast** - From idea to GitHub in 30 seconds
-- 🔒 **Secure** - Token-based authentication
+- ⚡ **Fast** - From idea to GitHub in 30 seconds, deployed to AWS in 15 minutes
+- 🔒 **Secure** - Token-based authentication, encrypted credential storage
+- 💰 **Cost-Aware** - Built-in cost estimation and free tier tracking
 - 🔧 **Customizable** - Modify templates to fit your needs
 
 ## 📦 Installation
@@ -169,6 +171,164 @@ platform create api my-service --github -d "My awesome API"
 platform create api my-service --github --private -d "Internal user service"
 ```
 
+## ☁️ AWS Deployment
+
+Deploy your services to AWS with a single command using automated Terraform workflows.
+
+### Prerequisites
+
+1. **AWS Account** - Sign up at https://aws.amazon.com (free tier available)
+2. **Terraform** - Install from https://terraform.io
+3. **AWS Credentials** - Create IAM user with access keys
+
+### Quick Start
+
+**1. Configure AWS:**
+```bash
+platform aws configure
+
+# Enter when prompted:
+# - AWS Access Key ID
+# - AWS Secret Access Key
+# - Default Region (e.g., us-east-1)
+```
+
+**2. Deploy Service:**
+```bash
+# Create service first
+platform create api my-service
+cd my-service
+
+# Deploy to AWS (development environment)
+platform deploy aws my-service
+
+# Deployment will:
+# ✔ Validate Terraform configuration
+# ✔ Show cost estimate ($0 with free tier!)
+# ✔ Deploy VPC, EC2, RDS, security groups
+# ✔ Configure CloudWatch monitoring
+# ✔ Return application URL
+#
+# Estimated time: 10-15 minutes
+```
+
+**3. Manage Deployment:**
+```bash
+# Check status
+platform deploy status my-service
+
+# View logs
+platform deploy logs my-service
+
+# Destroy resources
+platform deploy destroy my-service
+```
+
+### AWS Commands
+
+```bash
+# Credential Management
+platform aws configure         # Set up AWS credentials
+platform aws status           # Check AWS connection
+platform aws costs            # View cost estimates
+
+# Deployment Management
+platform deploy aws <service>           # Deploy to AWS
+platform deploy aws <service> --env production  # Deploy to production
+platform deploy status <service>        # Check deployment status
+platform deploy logs <service>          # View CloudWatch logs
+platform deploy destroy <service>       # Destroy AWS resources
+platform deploy estimate <service>      # Estimate deployment costs
+```
+
+### Environment Options
+
+Deploy to different environments with appropriate instance sizing:
+
+| Environment | EC2 Instance | RDS Instance | Monthly Cost |
+|-------------|--------------|--------------|--------------|
+| development | t2.micro     | db.t3.micro  | $0 (free tier) |
+| staging     | t2.small     | db.t3.small  | ~$49/month   |
+| production  | t3.medium    | db.t3.small  | ~$94/month   |
+
+```bash
+# Development (free tier eligible)
+platform deploy aws my-service --env development
+
+# Staging
+platform deploy aws my-service --env staging
+
+# Production
+platform deploy aws my-service --env production
+```
+
+### What Gets Deployed
+
+Each deployment automatically creates:
+
+- **VPC** - Isolated virtual network
+- **Subnets** - Public (EC2) and private (RDS) subnets across 2 AZs
+- **EC2 Instance** - Application server with auto-assigned public IP
+- **RDS PostgreSQL** - Managed database with automated backups
+- **Security Groups** - Configured firewall rules
+- **Internet Gateway** - External connectivity
+- **Route Tables** - Network routing configuration
+- **CloudWatch** - Metrics, logs, and alarms
+
+### Cost Optimization
+
+**Free Tier Benefits (First 12 Months):**
+- ✅ 750 hours/month EC2 t2.micro
+- ✅ 750 hours/month RDS db.t3.micro
+- ✅ 30 GB storage (EBS + RDS combined)
+- ✅ 15 GB data transfer
+
+**Best Practices:**
+```bash
+# Always estimate first
+platform deploy estimate my-service
+
+# Check current costs
+platform aws costs
+
+# Destroy when not in use
+platform deploy destroy my-service
+```
+
+### Example Workflow
+
+```bash
+# 1. Configure AWS (one-time)
+platform aws configure
+
+# 2. Create and deploy service
+platform create api billing-api --github
+cd billing-api
+platform deploy aws billing-api
+
+# 3. Check deployment
+platform deploy status billing-api
+# Output:
+# ✅ EC2: i-0x1234 (t2.micro, running)
+# ✅ RDS: billing-api-db (db.t3.micro, available)
+# URL: http://54.123.45.67:3000
+
+# 4. View logs
+platform deploy logs billing-api
+
+# 5. When done testing
+platform deploy destroy billing-api
+# Estimated monthly savings: $33/month
+```
+
+### Documentation
+
+For detailed guides, see:
+- [AWS Deployment Guide](docs/AWS_DEPLOYMENT.md) - Complete deployment walkthrough
+- [AWS Setup Guide](docs/AWS_SETUP.md) - AWS account and IAM configuration
+- [Cost Optimization](docs/COST_OPTIMIZATION.md) - Save money on AWS
+- [Troubleshooting](docs/TROUBLESHOOTING.md) - Common issues and solutions
+
 ## 📋 Available Templates
 
 ### 1. Node.js/TypeScript API (`api`)
@@ -277,9 +437,11 @@ platform-engineering-toolkit/
 - **CLI Framework:** Commander.js
 - **Interactive Prompts:** Inquirer
 - **GitHub API:** Octokit
+- **AWS SDK:** @aws-sdk/client-* (EC2, RDS, STS, CloudWatch)
 - **Git Operations:** Simple-Git
 - **Configuration:** Conf
 - **Terminal UI:** Chalk, Ora
+- **Process Management:** Child Process (Terraform automation)
 
 ### Template Technologies
 - **Languages:** TypeScript, Node.js
@@ -305,10 +467,19 @@ platform-engineering-toolkit/
 
 ## 📚 Documentation
 
+### GitHub Integration
 - [GitHub Integration Guide](docs/GITHUB_INTEGRATION.md)
+- [Implementation Summary](docs/GITHUB_INTEGRATION_SUMMARY.md)
+
+### AWS Deployment
+- [AWS Deployment Guide](docs/AWS_DEPLOYMENT.md)
+- [AWS Setup Guide](docs/AWS_SETUP.md)
+- [Cost Optimization](docs/COST_OPTIMIZATION.md)
+- [Troubleshooting](docs/TROUBLESHOOTING.md)
+
+### General
 - [Testing Guide](docs/TESTING_GUIDE.md)
 - [Quick Reference](docs/QUICK_REFERENCE.md)
-- [Implementation Summary](docs/GITHUB_INTEGRATION_SUMMARY.md)
 
 ## 🎓 Learning Outcomes
 
@@ -352,11 +523,14 @@ By using and studying this toolkit, you'll learn:
 - [x] Automatic code push
 - [x] Public/private options
 
-### 🔄 Phase 3: AWS Deployment (In Progress)
-- [ ] One-command AWS deployment
-- [ ] Terraform automation
-- [ ] Multi-environment support
-- [ ] Cost estimation
+### ✅ Phase 3: AWS Deployment (Complete)
+- [x] One-command AWS deployment
+- [x] Terraform automation
+- [x] Multi-environment support (dev/staging/prod)
+- [x] Cost estimation and tracking
+- [x] CloudWatch monitoring integration
+- [x] Deployment state management
+- [x] Comprehensive documentation
 
 ### 📋 Phase 4: Service Registry (Planned)
 - [ ] Service catalog
@@ -375,9 +549,11 @@ By using and studying this toolkit, you'll learn:
 - **Templates:** 2 production-ready
 - **Microservices:** 5 fully functional
 - **Tests:** 213 automated (100% passing)
-- **Commands:** 10+ CLI commands
-- **Documentation:** 4 comprehensive guides
+- **Commands:** 15+ CLI commands
+- **Documentation:** 8 comprehensive guides
+- **Cloud Platforms:** AWS (with Terraform)
 - **Dependencies:** Minimal, well-maintained
+- **Deployment Time:** 30 seconds to GitHub, 15 minutes to AWS
 
 ## 🤝 Contributing
 
